@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "panel-driver"
+version = "0.1.0"
+description = "Drive a HOTSPOTEK USB HID bar display directly from Python"
+requires-python = ">=3.10"
+dependencies = [
+    "hid>=1.0",
+    "Pillow>=10",
+]
+
+[project.scripts]
+send-test-pattern = "scripts.send_test_pattern:main"
+
+[tool.setuptools.packages.find]
+include = ["panel_driver*"]
