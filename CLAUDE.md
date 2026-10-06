@@ -1,0 +1,43 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project
+
+Python driver for a HOTSPOTEK USB HID bar display (VID/PID `0x5548:0x1011`), reverse-engineered from a USBPcap capture of the vendor Windows software. Target hosts are macOS and Raspberry Pi/Linux. The eventual goal is a stats-rendering layer (clock, CPU/mem/temp) on top of the transport; only the transport exists so far. `README.md` is empty.
+
+`handoff/panel_protocol_handoff.md` is the authoritative protocol write-up (header layout, init sequence, open questions). Read it before changing anything in `panel_driver/`. Note that its section 5 "proposed architecture" is partly aspirational: `render.py` and `probe_init_sequence.py` do not exist.
+
+## Commands
+
+There is no test suite, linter, or build step configured. Scripts are the only way to exercise code, and most need the physical panel attached.
+
+```bash
+source .venv/bin/activate
+pip install hid Pillow            # deps; `pip install -e .` currently fails (see below)
+
+python scripts/send_test_pattern.py [--ccw] [--loop N]   # one-shot/short orientation check
+python scripts/stream.py          # stream assets/landscape_bg.jpg, retries open for 60s
+python scripts/stream_test.py     # stream test pattern after pressing Enter
+python scripts/stream_retry.py    # stream test pattern, retries open until device appears
+```
+
+Run scripts from the repo root: `stream_test.py` and `stream_retry.py` open `assets/test_pattern_1920x462.png` by relative path. Each script prepends the repo root to `sys.path`, so the package does not need to be installed.
+
+`pyproject.toml` has `build-backend = "setuptools.backends._legacy:_Backend"`, which is not a valid backend (should be `setuptools.build_meta`), so `pip install -e .` will fail until that is fixed. Its `send-test-pattern` entry point also points at `scripts.send_test_pattern`, but `scripts/` is excluded from the package list.
+
+## Architecture
+
+Pipeline: **landscape 1920×462 PIL image → `rotation.to_panel_native` → JPEG encode → `protocol.build_frame_packets` → `device.write_frame`**. `stream.run()` wires this into a render-callback loop. The scripts in `scripts/` duplicate this pipeline by hand instead of calling `stream.run()`.
+
+- `protocol.py`: builds 1024-byte packets. Every command (`CRTDIS`, `CRTLIG`, `CRTDRA`) shares a 32-byte header: `CRT\0\0` + 5-byte command name + big-endian uint16 at bytes 10–11 + 2 flag bytes at 12–13 + zero padding. The uint16 means different things per command: `32 + len(jpeg)` for DRA, the brightness (0–100) for LIG, and 32 for DIS. DRA flags are `b1 00` (an unexplained constant); DIS/LIG flags are `00 00`. A JPEG frame can be at most 65535−32 bytes because of the uint16, so lower the JPEG quality if `build_frame_packets` raises `ValueError`.
+- `device.py`: wraps the `hid` package. `init_display()` (CRTDIS then CRTLIG) must be sent once per session before the first frame, or the panel's USB controller hangs after about 60–70s. The panel is write-only and has no IN traffic.
+- `rotation.py`: the panel's native buffer is portrait 462×1920 even though it is physically a wide bar, so landscape canvases are rotated before encoding. `clockwise=True` (`Image.ROTATE_270`) is the empirically confirmed correct direction. Always pass it, which is the default.
+- `stream.py`: the loop that re-sends frames at a fixed FPS (default 15, JPEG quality 70). The vendor software re-sends continuously even for static content, so never send a frame once and stop.
+
+### Gotchas
+
+- **hidapi report-ID quirk:** every write must be `b"\x00" + packet` (1025 bytes). hidapi on macOS treats byte 0 as the report ID and strips it, so without the prefix only 1023 bytes reach the wire. `device.write_frame`/`init_display`/`set_backlight` already do this. Any new code that calls `dev.write` directly must do the same (`stream_retry.py` does).
+- Calling `build_frame_packets` produces a pre-padded list, and the last packet is zero-padded to 1024 bytes. Don't pad again.
+- The panel appears to need a power-cycle to recover from a hung state, which is why the scripts include "power-cycle the panel now" retry-open loops.
+- Still-open questions (see handoff doc section 4): the meaning of header bytes 12–13, and the minimum sustained frame rate.
