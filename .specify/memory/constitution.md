@@ -1,13 +1,3 @@
-<!--
-Sync Impact Report
-- Version change: (template, unversioned) -> 1.0.0
-- Modified principles: none (initial ratification; all principles newly authored)
-- Added sections: Core Principles I-V, Compatibility & Legal Constraints, Contribution Workflow, Governance
-- Removed sections: none
-- Deferred items:
-  - TODO(CI): CI is scheduled for Phase 0 of the first spec; until then pytest is run locally.
-  - TODO(TESTS): no tests exist yet; Principle IV assumes pytest suites are added from Phase 0.
--->
 # smart-panel Constitution
 
 ## Core Principles
