@@ -28,9 +28,10 @@ reference files along with this doc into the new project:
 | Physical connection | Internal USB 2.0 via motherboard 9-pin header (or 4-pin subset — power/D+/D-/GND). Not RS-232 serial despite appearances. |
 | Native display buffer | **462 (W) × 1920 (H), portrait** — even though the physical panel is a wide bar. Vendor software presents a 1920×462 landscape canvas to the user and rotates internally before transmission. |
 
-Other devices seen in the same capture (ignore — unrelated peripherals on
-the same host): Goodix fingerprint sensor (`0x27c6:0x6594`), Syntek webcam
-(`0x174f:0x11af`), Intel Bluetooth (`0x8087:0x0033`).
+`fullpaneltest.pcapng` in this repo has been filtered to the panel's traffic
+only (USB device address 9; 39,291 packets). The original capture also held
+unrelated peripherals from the capture host (a fingerprint sensor, webcam, and
+Bluetooth adapter), and the capture-host CPU/OS metadata; both were removed.
 
 ---
 

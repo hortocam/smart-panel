@@ -10,7 +10,9 @@ Python driver for a HOTSPOTEK USB HID bar display (VID/PID `0x5548:0x1011`), rev
 
 ## Commands
 
-There is no test suite, linter, or build step configured. Scripts are the only way to exercise code, and most need the physical panel attached.
+There is no test suite, linter, or build step configured yet. pytest is the chosen test framework (`pip install -e ".[dev]"` once the packaging below is fixed, or `pip install pytest`), and CI is planned for Phase 0. Until tests exist, scripts are the only way to exercise code, and most need the physical panel attached.
+
+The project is MIT licensed (`LICENSE`), with a `CODE_OF_CONDUCT.md`. The project constitution lives at `.specify/memory/constitution.md` and governs spec-driven work (Spec Kit skills: `/speckit-specify`, `/speckit-plan`, etc.).
 
 ```bash
 source .venv/bin/activate

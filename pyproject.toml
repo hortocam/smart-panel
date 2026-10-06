@@ -7,10 +7,15 @@ name = "panel-driver"
 version = "0.1.0"
 description = "Drive a HOTSPOTEK USB HID bar display directly from Python"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Cameron Horton" }]
 dependencies = [
     "hid>=1.0",
     "Pillow>=10",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest"]
 
 [project.scripts]
 send-test-pattern = "scripts.send_test_pattern:main"
