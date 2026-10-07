@@ -18,7 +18,7 @@ Commands: `set --text T` (spoolable).
 
 ## `alerts` (overlay on `main`)
 
-Implements FR-017 to FR-024. Queue, preemption, and states per [data-model.md](../data-model.md).
+Implements FR-017 to FR-024. Queue, preemption, and states per [data-model.md](../data-model.md). Declares the `alert_sink` capability: alerts raised by other plugins through `ctx.alert(...)` (capability `alert_source`) are routed here by the core and validated like `alert push`.
 
 | Setting | Type | Default | Notes |
 |---|---|---|---|
@@ -95,7 +95,7 @@ Behavior: the strip is pre-rendered when the item set changes; items are swapped
 
 Implements FR-031 to FR-036; 1 to 6 gauges, laid out as a grid sized to the count (1x1 to 3x2).
 
-Settings: `gauges` (list of Gauge, see [data-model.md](../data-model.md)), `layout` (`auto` or `{cols, rows}`), `bg` (color, default `#101418`), `font`, `value_size`, `label_size`.
+Settings: `gauges` (list of Gauge, see [data-model.md](../data-model.md)), `layout` (`auto` or `{cols, rows}`), `bg` (color, default `#101418`), `font`, `value_size` (default 72), `label_size` (default 28); sizes below `min_text_px` are clamped up.
 
 Commands (group `gauge`):
 
@@ -111,7 +111,7 @@ Validation: more than 6 gauges is rejected with a message naming the maximum (sp
 
 Implements FR-037 to FR-041.
 
-Settings: `entries` (list of Sidebar Entry), `bg` (default `#0B0E11`), `chip_fg` / `chip_bg` (default `#FFFFFF` / `#D62839`), `font`, `label_size`, `chip_size`.
+Settings: `entries` (list of Sidebar Entry), `bg` (default `#0B0E11`), `chip_fg` / `chip_bg` (default `#FFFFFF` / `#D62839`), `font`, `label_size` (default 24), `chip_size` (default 24); sizes below `min_text_px` are clamped up.
 
 Commands (group `sidebar`):
 

@@ -29,6 +29,8 @@ Failure, written to stdout (not stderr) so agents parse one stream; human mode w
 {"ok": false, "error": {"code": "invalid_input", "message": "settings.speed must be between 10 and 600", "setting": "plugins.crawl.settings.speed"}}
 ```
 
+Environment: `SMART_PANEL_HOME`, `SMART_PANEL_RUNTIME` (default `/tmp/smart-panel`, shared by all accounts), `SMART_PANEL_RUNNER_UID` (set by allowed non-owner accounts; the CLI refuses a socket or runtime directory owned by any uid other than itself, root, or this one), `SMART_PANEL_JSON`.
+
 Push commands that were spooled return `{"ok": true, "data": {"saved_for_later": true, "spool_id": "..."}}` with exit code 0.
 
 ### Exit codes (documented, stable)

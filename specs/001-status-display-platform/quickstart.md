@@ -104,7 +104,7 @@ The conformance suite (`sdk.testing.assert_conforms`) runs against every built-i
 
 ### H. Access control (FR-051)
 
-Run the integration test that starts the runner under one uid and connects as another (skipped when unprivileged); the pure policy function is unit tested in all environments. Manually: `smart-panel access allow-user hermes`, then run `alert push` as `hermes` (accepted); as a third account (exit 5).
+Run the integration test that starts the runner under one uid and connects as another (skipped when unprivileged); the pure policy function is unit tested in all environments. Manually: `smart-panel access allow-user hermes`, then run `alert push` as `hermes` (accepted); as a third account (exit 5). Allowed non-owner accounts export `SMART_PANEL_RUNNER_UID=<runner uid>`; with it unset or wrong, a socket owned by another uid is refused (impersonation guard), and with the runtime directory missing (runner never started since boot) the push exits 3 rather than creating it.
 
 ## Hardware scenarios (Raspberry Pi 4B + panel)
 

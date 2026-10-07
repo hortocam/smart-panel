@@ -7,7 +7,7 @@ Entities, fields, validation, and state machines derived from the spec. Types ar
 | Name | Default | Notes |
 |---|---|---|
 | `home` | `$SMART_PANEL_HOME` or `~/.config/smart-panel` (mode 0700) | `config.json`, `secrets.json` (0600), `state.db`, `state/<instance>.db`, `plugins/`, `runner.log*`, `cli-cache.json` |
-| `runtime` | `$SMART_PANEL_RUNTIME`, else config `paths.runtime`, else `/tmp/smart-panel` (mode 0755, same path for every account, owned by the runner's uid) | `control.sock` (0666), `runner.lock`, `runner.pid`, `spool/` (sticky 1733) |
+| `runtime` | `$SMART_PANEL_RUNTIME`, else `/tmp/smart-panel` (mode 0755, same path for every account, created only by the runner or `service install`, owned by the runner's uid) | `control.sock` (0666), `runner.lock`, `runner.pid`, `spool/` (sticky 1733) |
 | `spool` | `<runtime>/spool` | Overridable with `paths.spool` for a disk-backed spool |
 
 ## Configuration

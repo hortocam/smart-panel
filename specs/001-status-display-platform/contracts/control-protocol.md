@@ -4,7 +4,7 @@ Local-only channel between the CLI (or any client) and the runner.
 
 ## Transport
 
-- Unix domain stream socket at `<runtime>/control.sock` (`<runtime>` = `$SMART_PANEL_RUNTIME`, else config `paths.runtime`, else `/tmp/smart-panel`; identical for all accounts).
+- Unix domain stream socket at `<runtime>/control.sock` (`<runtime>` = `$SMART_PANEL_RUNTIME`, else `/tmp/smart-panel`; identical for all accounts).
 - Directory mode 0755, socket mode 0666. **Authorization is by kernel peer credentials, not file permissions** (research decision 6).
 - UTF-8 JSON, one object per line (`\n` terminated); max line 1 MiB. A connection may carry many requests; the server answers in order.
 - No network listener exists in this release (webhook intake is deferred).
@@ -66,7 +66,7 @@ For every connection the server obtains `(uid, gid)` from the kernel and the pee
 
 When connecting fails with `ENOENT` or `ECONNREFUSED`, the client may spool commands whose manifest marks them `spoolable` (and only those).
 
-File location: `<runtime>/spool/<received_at_ns>-<uuid>.json`, created with mode 0644 in a sticky 1733 directory.
+File location: `<runtime>/spool/<received_at_ns>-<uuid>.json`, created with mode 0644 in a sticky 1733 directory. The CLI never creates `<runtime>`; if it is missing, the owner's account spools to `<home>/spool-pending/` (same file format, imported on start), and any other account gets `runner_not_running` (exit 3). Non-owner accounts set `$SMART_PANEL_RUNNER_UID` so the CLI can tell, and so it can refuse a socket owned by anyone else.
 
 ```json
 {"v": 1, "received_at": 1791412345.123, "cmd": "plugin.call", "args": {"instance": "alerts", "verb": "push", "args": {"severity": "critical", "message": "UPS on battery"}}}
