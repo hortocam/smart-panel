@@ -222,3 +222,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Kanban worker worktrees. The dispatcher creates these INSIDE the repo root
+# (.worktrees/<task-id>), so a repo-wide check would otherwise scan another
+# branch's files: `ruff check .` and `pytest` on `main` then fail on code that
+# is not on `main` at all, while CI (which has no worktrees) stays green.
+.worktrees/
+
+# Local scratch note, not project content
+IDEA.md

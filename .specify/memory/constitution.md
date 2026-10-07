@@ -62,6 +62,30 @@ fresh checkout using documented commands.
 Rationale: the quirks that already exist (report ID handling, permissions) show that "works on my
 machine" is the default failure mode for this kind of driver.
 
+### VI. Parallel-Safe Execution
+
+Work MUST be decomposed so that concurrent units of work never write the same file region.
+
+- **One writer per line.** Each unit of work owns a disjoint set of `tasks.md` lines and ticks
+  only those. Two units MUST NOT edit the same line, and no unit may reformat or renumber the
+  file. `tasks.md` is a shared ledger; the rule is a single writer per entry, not a merge.
+  Where a tool ticks task boxes itself (for example `/speckit-implement`), that counts as the
+  writer — the unit that runs the tool owns those lines.
+- **Work units are phases or user stories**, whichever keeps file footprints disjoint. A unit's
+  scope is named in its card with an explicit out-of-scope list, so ambition does not leak across
+  the boundary.
+- **Parallelism is a property of the file footprint, not of the schedule.** Units may run
+  concurrently when they touch different files; units sharing a file MUST be serialized. Shared
+  files (a plugin registry, `pyproject.toml`, the shared ledger) are the collision magnets, and
+  the fix is sequencing, not conflict resolution after the fact.
+- **The integration branch is the artefact that is verified.** Independently green units can
+  still be red together when one changes a contract another depends on. After a parallel batch
+  merges, the gate is the check on the integration branch, not the individual unit.
+
+Rationale: sequential-only execution wastes available parallelism, and unstructured parallelism
+produces merge conflicts and red integration branches. The rule that makes parallelism safe is
+disjoint writers, which is checkable before dispatch rather than discovered at merge time.
+
 ## Compatibility & Legal Constraints
 
 - The project is licensed under the MIT License (`LICENSE`). Contributions MUST be original work
@@ -94,6 +118,34 @@ machine" is the default failure mode for this kind of driver.
 - All participants MUST follow the Code of Conduct (`CODE_OF_CONDUCT.md`).
 - Documentation MUST be updated with the behavior it describes, in the same pull request.
 
+## Execution Pattern
+
+How work is executed is a **choice of implementation path**, not a principle. Either pattern
+satisfies this constitution; select per unit of work and record the choice in the unit's card.
+
+| Path | Shape | Use when |
+|---|---|---|
+| **Standalone single agent** | One agent does the work and opens the pull request directly. | A small, well-bounded change; a documentation or tooling change; a single task. The agent still honours every principle above, and still records the constitution check in the pull request. |
+| **Hermes / Kanban orchestration** | An orchestrator creates one Kanban card per unit of work, an implementation worker runs `/speckit-implement` scoped to the card, an independent reviewer of a **different model lineage** runs `/speckit-converge` and opens the pull request, and a single merge authority merges. | Multi-task phases, anything with tests that need independent verification, or work in flight on more than one branch. |
+
+Requirements that apply to **both** paths:
+
+- The change lands through a pull request. Nothing is pushed to `main`.
+- The pull request states what changed, why, and how it was tested, including hardware
+  verification where relevant (Principle IV).
+- The constitution check is recorded in the pull request, not assumed.
+- Under orchestration, implementation and review MUST run on **different model lineages**, and
+  the reviewer MUST NOT be the author's lineage. Under the single-agent path that separation is
+  unavailable by construction, so the pull request MUST say plainly that no independent review
+  occurred — do not describe a self-review as independent.
+
+Rationale: the project is worked on both ways — a contributor may run one phase through an
+interactive coding agent, and the same phase through the orchestrated pipeline. Writing one
+pattern into the constitution would make the other a violation; writing the shared obligations
+and the difference between them keeps both lawful without weakening the gate. The single-agent
+path is a real reduction in assurance, and the only honest way to allow it is to require that it
+be declared.
+
 ## Governance
 
 This constitution supersedes other project practices where they conflict. Amendments are made by
@@ -107,4 +159,10 @@ for clarifications and wording. Compliance is reviewed at pull request time (see
 Workflow) and revisited whenever the supported hardware, platforms, or dependencies change.
 Runtime guidance for AI coding agents lives in `CLAUDE.md`.
 
-**Version**: 1.1.0 | **Ratified**: 2026-10-06 | **Last Amended**: 2026-10-07
+**Version**: 1.2.0 | **Ratified**: 2026-10-06 | **Last Amended**: 2026-10-07
+
+## Amendment Log
+
+| Version | Date | Change | Rationale |
+|---|---|---|---|
+| 1.2.0 | 2026-10-07 | Added Principle VI (Parallel-Safe Execution) and the Execution Pattern section. | Parallel work was about to be dispatched for Phase 1 and later user stories, and the constitution said nothing about how concurrent units avoid corrupting the shared `tasks.md` ledger or the integration branch. Principle VI makes disjoint writers checkable before dispatch. The Execution Pattern section records that a standalone single-agent run and the Hermes/Kanban orchestrated pipeline are both lawful paths, with the shared obligations named and the single-agent path required to declare that no independent review occurred. No existing principle was removed or redefined, so this is MINOR; in-flight work is unaffected because both patterns were already in use. |
