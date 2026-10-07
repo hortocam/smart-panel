@@ -31,13 +31,19 @@ You do not need any of that restated in the card body.
 This is CT 914 (a Proxmox LXC), **not** the Raspberry Pi, and there is **no panel
 attached**. Consequences that bite:
 
+- **`gh` must be invoked as `bash /home/hermes/.hermes/bin/agent-gh.sh …`**, not bare `gh`.
+  Git pushes already authenticate as the machine account `hortocam-agents` (a credential
+  helper in the global git config resolves it per profile), but bare `gh` reads the human's
+  token, so a PR opened with it is authored by the human and the provenance is lost. The
+  wrapper resolves the machine token at use time; it fails loudly rather than falling back,
+  because a silent fallback is exactly how the wrong account gets credited.
+- If you see `gh: not authenticated` from bare `gh`, that is expected — use the wrapper.
 - `python3` on this host has no `pip` module, no `pytest`, no `Pillow`, no `hid`, and no
   `tshark`. Set up your own venv: `python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"`
-  (bootstrap pip first if the venv comes up bare).
-- `pip install -e .` was broken at the last commit (`build-backend` was invalid and the
-  package list excluded `smart_panel`). **T001 fixes exactly this** — if you are on
-  Phase 1 you are the one fixing it, so install from the repo's own instructions rather
-  than assuming the command works.
+  (bootstrap pip first if the venv comes up bare). `uv` is available and works well:
+  `uv venv --python 3.11 .v && uv pip install --python .v/bin/python -e ".[dev]"`.
+- `pip install -e .` was broken at the last commit; T001 fixed it on `main`. If you are on a
+  later wave, install normally.
 - Hardware tests must be **skipped, not faked**. `pytest -m "not hardware"` is the default
   via `addopts`. Never mark a hardware task done without real device output.
 - `ruff check .` must be clean. `pytest` must be green with no panel present.
