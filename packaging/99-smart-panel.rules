@@ -1,0 +1,16 @@
+# udev rule for the HOTSPOTEK USB HID bar display (VID:PID 5548:1011).
+#
+# Install:
+#   sudo cp packaging/99-smart-panel.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger
+# then replug the panel.
+#
+# Access model:
+#   TAG+="uaccess"  -> the user sitting at the seat (interactive desktop) may open it.
+#   GROUP="plugdev" -> a headless service account may open it. Add that account to
+#                      the plugdev group: sudo usermod -aG plugdev <service-account>
+#   MODE="0660"     -> deliberately NOT world-writable. A world-writable
+#                      device node would let any local account open the panel
+#                      directly and bypass the CLI access policy (FR-051), which
+#                      the runner enforces over the control channel.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="5548", ATTRS{idProduct}=="1011", TAG+="uaccess", GROUP="plugdev", MODE="0660"
