@@ -28,6 +28,10 @@ Run scripts from the repo root: `stream_test.py` and `stream_retry.py` open `ass
 
 `pyproject.toml` has `build-backend = "setuptools.backends._legacy:_Backend"`, which is not a valid backend (should be `setuptools.build_meta`), so `pip install -e .` will fail until that is fixed. Its `send-test-pattern` entry point also points at `scripts.send_test_pattern`, but `scripts/` is excluded from the package list.
 
+## Active feature
+
+Spec-driven work lives in `specs/001-status-display-platform/`. The plan adds a `smart_panel` application layer (runner, plugins, CLI) on top of `panel_driver`; it is not implemented yet, so the Architecture section below describes only the existing transport. The plan pointer at the bottom of this file is managed by the agent-context extension (refresh with `uv run --no-project --with pyyaml bash .specify/extensions/agent-context/scripts/bash/update-agent-context.sh`, since the script needs PyYAML).
+
 ## Architecture
 
 Pipeline: **landscape 1920×462 PIL image → `rotation.to_panel_native` → JPEG encode → `protocol.build_frame_packets` → `device.write_frame`**. `stream.run()` wires this into a render-callback loop. The scripts in `scripts/` duplicate this pipeline by hand instead of calling `stream.run()`.
@@ -43,3 +47,9 @@ Pipeline: **landscape 1920×462 PIL image → `rotation.to_panel_native` → JPE
 - Calling `build_frame_packets` produces a pre-padded list, and the last packet is zero-padded to 1024 bytes. Don't pad again.
 - The panel appears to need a power-cycle to recover from a hung state, which is why the scripts include "power-cycle the panel now" retry-open loops.
 - Still-open questions (see handoff doc section 4): the meaning of header bytes 12–13, and the minimum sustained frame rate.
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+at specs/001-status-display-platform/plan.md
+<!-- SPECKIT END -->
