@@ -13,19 +13,19 @@ Turn the existing transport library (`panel_driver`: USB HID framing, init, rota
 - a **CLI** (`smart-panel`) that is a thin client of a local Unix-socket control channel, with a stable `--json` envelope, documented exit codes, a self-describing `schema` command for agents, and a spool fallback so pushes still succeed while the runner is down;
 - a durable **SQLite state store** (alert history, missed alerts, pushed values) and a JSON **config file** validated and applied live.
 
-Technical approach: Python 3.11+, Pillow for rendering, stdlib for everything else on the hot path. Only two new runtime dependencies (`psutil`, `defusedxml`), both confined to the application layer. Delivery is staged to follow the spec's priorities, starting with a Phase 0 that fixes packaging and establishes pytest and CI, as the constitution requires.
+Technical approach: Python 3.11+, Pillow for rendering, stdlib for everything else on the hot path. Only two new runtime dependencies (`psutil`, `defusedxml`), both confined to the application layer and shipped as an optional `app` extra, so installing the transport alone pulls in only `hid` and `Pillow`. Delivery is staged to follow the spec's priorities, starting with a Phase 0 that fixes packaging and establishes pytest and CI, as the constitution requires.
 
 ## Technical Context
 
 **Language/Version**: Python 3.11+ (Raspberry Pi OS 12 ships 3.11; developed on macOS with 3.13). `requires-python` moves from `>=3.10` to `>=3.11` in Phase 0.
 
-**Primary Dependencies**: Existing: `hid`, `Pillow`. New (application layer only): `psutil` (system metrics), `defusedxml` (safe RSS/Atom parsing). Dev: `pytest`, `ruff`. Everything else is stdlib: `argparse`, `socket`, `sqlite3`, `threading`, `urllib`, `json`, `importlib.metadata`.
+**Primary Dependencies**: Existing: `hid`, `Pillow`. New (application layer only, `app` extra, also included in `dev`): `psutil` (system metrics), `defusedxml` (safe RSS/Atom parsing). Dev: `pytest`, `ruff`. Everything else is stdlib: `argparse`, `socket`, `sqlite3`, `threading`, `urllib`, `json`, `importlib.metadata`.
 
 **Storage**: A JSON config file (atomic write, versioned), a SQLite database in WAL mode for runtime state (alert history, missed alerts, pushed values), a spool directory for pushes made while the runner is down, and a `0600` secrets file. All under one configurable home directory.
 
 **Testing**: pytest. Layers: unit, contract (CLI JSON shapes, control protocol, plugin SDK conformance), integration (a runner started with the file sink and an injected fake clock, driven through the real CLI), and `hardware`-marked tests skipped by default. Golden fixtures for the wire protocol are extracted from `handoff/fullpaneltest.pcapng`.
 
-**Target Platform**: Raspberry Pi 4B (4 GB) on Raspberry Pi OS 64-bit, alongside the Hermes agent; macOS for development. Linux needs a udev rule for hidraw access (documented in README in Phase 0).
+**Target Platform**: Raspberry Pi 4B (4 GB) on Raspberry Pi OS 64-bit, alongside the Hermes agent; macOS for development. Linux needs a udev rule for hidraw access (`uaccess` plus `plugdev` group, not world-writable; documented in README in Phase 0).
 
 **Project Type**: Library plus long-running daemon plus CLI (single Python distribution, two importable packages).
 
@@ -33,7 +33,7 @@ Technical approach: Python 3.11+, Pillow for rendering, stdlib for everything el
 
 **Constraints**: Frame (header plus JPEG) ≤ 65,535 bytes, so quality adapts per frame; panel needs init each session and continuous refresh; USB write path is blocking and must not stall rendering; the agent shares the machine, so the runner runs niced and sheds load (FR-048). No panel is available in CI.
 
-**Scale/Scope**: One panel, one runner; ≤ 6 gauges; sidebar ≤ 6 entries; alert queue ≤ 50; 5 built-in plugins; roughly 50 CLI subcommands; alert history bounded by the retention window.
+**Scale/Scope**: One panel, one runner; ≤ 6 gauges; sidebar ≤ 6 entries; alert queue default 50 (configurable 5 to 200); 6 built-in plugins; roughly 50 CLI subcommands; alert history bounded by the retention window.
 
 ## Constitution Check
 
@@ -42,12 +42,12 @@ Technical approach: Python 3.11+, Pillow for rendering, stdlib for everything el
 | Principle / section | Gate | Status |
 |---|---|---|
 | I. Evidence-based protocol fidelity | No change to wire protocol semantics is planned. New protocol knowledge (measured throughput) is added to the handoff doc with the capture analysis. Golden tests derived from the capture. Bytes 12-13 stay labeled unverified. | PASS |
-| II. Hardware-safe by default | The sink sends CRTDIS+CRTLIG on every (re)open; brightness is validated 0-100 at the library boundary (Phase 0 hardening of `device.py`); frame size is fitted before send; every `dev.write` keeps the `\x00` prefix and stays inside `device.py`; no new command bytes are introduced. | PASS |
-| III. Layered and minimal | `panel_driver` stays a transport (deps unchanged). All rendering, plugins, CLI, and new dependencies live in `smart_panel`, which depends on `panel_driver`, never the reverse. New abstractions (sinks, plugin SDK, control channel) each trace to a spec requirement (FR-012, FR-043 to FR-047, FR-002/FR-004). | PASS |
+| II. Hardware-safe by default | The sink sends CRTDIS+CRTLIG on every (re)open; brightness is validated 0-100 at the library boundary (Phase 0 hardening of `device.py`), and brightness `0` stays labeled unverified until the Phase 0 hardware smoke test (T129) records its effect; frame size is fitted before send; every `dev.write` keeps the `\x00` prefix and stays inside `device.py`; no new command bytes are introduced. | PASS |
+| III. Layered and minimal | `panel_driver` stays a transport (base deps unchanged; `psutil` and `defusedxml` are an optional `app` extra). All rendering, plugins, CLI, and new dependencies live in `smart_panel`, which depends on `panel_driver`, never the reverse. New abstractions (sinks, plugin SDK, control channel) each trace to a spec requirement (FR-012, FR-043 to FR-047, FR-002/FR-004). | PASS |
 | IV. Testable without hardware | File/null sinks and an injectable clock let the whole pipeline run under pytest. Hardware tests are marked and skipped by default. CI is created in Phase 0, before feature work. | PASS |
 | V. Cross-platform and reproducible | macOS and Linux in the CI matrix; platform differences (peer credentials, service manager, hid quirk) isolated in single modules (`control/peercred.py`, `service.py`, `device.py`); `requires-python` matches CI; install steps and udev rule documented. | PASS |
 | Compatibility & Legal | Bundled font and icons use permissive licenses recorded in `THIRD_PARTY_NOTICES.md`; no vendor software or brand logos (generic mail/calendar/chat glyphs only); the capture is already filtered; ESPN and Google News are used as personal, non-commercial feeds and flagged as such. | PASS |
-| Contribution Workflow | Spec Kit flow followed; PRs report hardware verification; docs updated with behavior. | PASS |
+| Contribution Workflow | Spec Kit flow followed; PRs report hardware verification (hardware smoke tasks T129 and T130 run before later phases build on the sink and runner); docs updated with behavior. | PASS |
 
 **Post-design re-check (after Phase 1)**: PASS. The only additions beyond the minimum are justified in Complexity Tracking.
 
@@ -81,7 +81,7 @@ panel_driver/                 # existing transport layer (kept minimal)
 
 smart_panel/                  # new application layer
 ├── core/
-│   ├── paths.py              # home/runtime/spool locations, SMART_PANEL_HOME
+│   ├── paths.py              # home/runtime/spool locations; SMART_PANEL_HOME, SMART_PANEL_RUNTIME (shared default /tmp/smart-panel)
 │   ├── config.py             # schema, atomic load/save, migration, live apply
 │   ├── settings.py           # SettingSpec: typed, ranged, enum settings + validation
 │   ├── store.py              # core SQLite (topics, meta) + per-plugin ctx.db()/ctx.kv

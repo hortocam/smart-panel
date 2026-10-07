@@ -4,7 +4,7 @@ Local-only channel between the CLI (or any client) and the runner.
 
 ## Transport
 
-- Unix domain stream socket at `<runtime>/control.sock` (`<runtime>` = `<tmpdir>/smart-panel-<uid>`).
+- Unix domain stream socket at `<runtime>/control.sock` (`<runtime>` = `$SMART_PANEL_RUNTIME`, else config `paths.runtime`, else `/tmp/smart-panel`; identical for all accounts).
 - Directory mode 0755, socket mode 0666. **Authorization is by kernel peer credentials, not file permissions** (research decision 6).
 - UTF-8 JSON, one object per line (`\n` terminated); max line 1 MiB. A connection may carry many requests; the server answers in order.
 - No network listener exists in this release (webhook intake is deferred).

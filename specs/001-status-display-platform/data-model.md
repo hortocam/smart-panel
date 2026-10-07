@@ -7,7 +7,7 @@ Entities, fields, validation, and state machines derived from the spec. Types ar
 | Name | Default | Notes |
 |---|---|---|
 | `home` | `$SMART_PANEL_HOME` or `~/.config/smart-panel` (mode 0700) | `config.json`, `secrets.json` (0600), `state.db`, `state/<instance>.db`, `plugins/`, `runner.log*`, `cli-cache.json` |
-| `runtime` | `<tmpdir>/smart-panel-<uid>` (mode 0755) | `control.sock` (0666), `runner.lock`, `runner.pid`, `spool/` (sticky 1733) |
+| `runtime` | `$SMART_PANEL_RUNTIME`, else config `paths.runtime`, else `/tmp/smart-panel` (mode 0755, same path for every account, owned by the runner's uid) | `control.sock` (0666), `runner.lock`, `runner.pid`, `spool/` (sticky 1733) |
 | `spool` | `<runtime>/spool` | Overridable with `paths.spool` for a disk-backed spool |
 
 ## Configuration
@@ -21,7 +21,7 @@ Config
 │   ├── fps: int                       # 5..30, default 15
 │   ├── brightness: int                # 0..100, default 50
 │   ├── jpeg_quality: {start: int 30..95 = 70, min: int 20..start = 30}
-│   ├── min_text_px: int               # 12..64, default 18 (FR-016)
+│   ├── min_text_px: int               # 12..64, default 24 (FR-016)
 │   ├── sink: "hid" | "files" | "null" # default "hid"
 │   └── files_dir: path | null         # used by the "files" sink
 ├── access

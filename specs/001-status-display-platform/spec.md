@@ -14,7 +14,7 @@
 
 - Q: Which severity levels should an alert support, and how long should each stay on screen by default? → A: Three levels: `info` (10 s), `warning` (20 s), `critical` (60 s); all defaults configurable.
 - Q: Where can the crawl get its headlines from in this release? → A: Items set through the CLI, RSS/Atom feeds (Google News), and JSON web endpoints (ESPN.com, per sport), with a way to map JSON fields to headline text.
-- Q: If the agent pushes an alert, count or value through the CLI while the runner is stopped or restarting, should the push be remembered and shown once the runner is back, or fail with an error? → A: Remember everything pushed while the runner is down and apply it on startup, but drop alerts older than their display duration when the runner starts.
+- Q: If the agent pushes an alert, count or value through the CLI while the runner is stopped or restarting, should the push be remembered and shown once the runner is back, or fail with an error? → A: Remember everything pushed while the runner is down and apply it on startup; alerts older than their display duration when the runner starts are not shown, but are recorded as expired and counted as missed.
 - Q: When an alert takes over the screen, should the crawl and the gauges stay partly visible, or should the alert cover everything except the sidebar? → A: The alert covers the main (gauge) area; the crawl keeps scrolling along the bottom and the sidebar stays visible.
 - Q: Which accounts on the Raspberry Pi should be allowed to control the display through the CLI (push alerts, change settings, restart the runner)? → A: The service's own account by default, plus an optional list of additional accounts or a group that the owner configures.
 
@@ -64,6 +64,7 @@ When something needs attention, an alert appears on the panel immediately and un
 8. **Given** an alert has been resolved by its source (a local process or the agent reports the same alert identifier as resolved), **When** that report is received, **Then** the matching alert is cleared whether it is on screen, queued, or already counted as missed.
 9. **Given** the sidebar alert indicator shows missed alerts, **When** the agent or user clears them through the CLI, **Then** the count resets to zero and the icon is hidden or returns to its idle state; **and** until cleared, the count persists across display cycles.
 10. **Given** a malformed alert (missing message, or a severity other than `info`, `warning`, or `critical`), **When** it is submitted, **Then** it is rejected with a clear error and the display is unaffected.
+11. **Given** a higher-severity alert arrives while a lower-severity alert is displayed, **When** it is received, **Then** it replaces the displayed alert immediately; the preempted alert returns to the front of its severity band, is not counted as missed, and gets its full display time when shown again.
 
 ---
 
@@ -181,7 +182,7 @@ A developer (or the owner's agent) can add a new kind of content, such as a new 
 
 - **FR-014**: The system MUST compose the display on a 1920×462 landscape canvas, divided into named regions (such as sidebar, main area, crawl strip), each assigned to one plugin instance.
 - **FR-015**: A default layout MUST be provided that places the sidebar on one side, the gauge area in the main region, and the crawl along the bottom edge, and the user MUST be able to override region placement and size through configuration. An alert MUST be displayed over the entire main region (the region that holds the gauges), covering its content for the alert's duration, and MUST leave the sidebar and crawl regions visible and updating.
-- **FR-016**: The system MUST keep the display legible: text and values MUST remain readable at normal viewing distance for a 9.16" panel (a configurable minimum text size with a sensible default).
+- **FR-016**: The system MUST keep the display legible: text and values MUST remain readable at normal viewing distance for a 9.16" panel (a configurable minimum text size, default 24 px, about 3 mm tall on this panel, adjustable from 12 to 64 px).
 
 **Alerts**
 
@@ -206,7 +207,7 @@ A developer (or the owner's agent) can add a new kind of content, such as a new 
 **Gauges**
 
 - **FR-031**: The system MUST support between 1 and 6 gauges in the gauge region and MUST reject configurations with more than 6.
-- **FR-032**: Each gauge MUST declare a label, a data source, a refresh interval, an aggregation rule with a time window, units, a value range, and optional color thresholds.
+- **FR-032**: Each gauge MUST declare a label, a data source, a refresh interval, an aggregation rule with a time window, units, a value range, and optional color thresholds. The refresh interval belongs to the gauge's data source; a gauge redraws whenever its source publishes a new value, and its own staleness limit controls when it shows no data.
 - **FR-033**: The system MUST provide the following gauge data sources out of the box: local system metrics (CPU load, memory, temperature, disk, network), values pushed through the CLI, and values read from a configured web endpoint that returns structured data.
 - **FR-034**: The system MUST support at least these aggregations: last value, average, minimum, maximum, and sum, each over a configurable time window.
 - **FR-035**: Gauges MUST support at least these styles: dial, horizontal bar, numeric, and short history line graph.
@@ -214,7 +215,7 @@ A developer (or the owner's agent) can add a new kind of content, such as a new 
 
 **Sidebar**
 
-- **FR-037**: The system MUST display a configurable list of sidebar entries, each with an icon, an optional label, and a count chip.
+- **FR-037**: The system MUST display a configurable list of sidebar entries (at most 6, including the built-in alert entry), each with an icon, an optional label, and a count chip.
 - **FR-038**: The system MUST include a set of standard application icons (including mail, calendar, and chat) and MUST allow custom icon images.
 - **FR-039**: Count values MUST be settable through the CLI, and sidebar entries MUST also support pulling counts from a configured data source on a refresh interval.
 - **FR-040**: The sidebar MUST support hide-when-zero, count abbreviation above a limit, and a stale/unknown state.
@@ -224,7 +225,7 @@ A developer (or the owner's agent) can add a new kind of content, such as a new 
 **Plugins**
 
 - **FR-043**: The system MUST deliver the crawl, gauges, alerts display, and sidebar as plugins that use the same extension contract available to third parties; the core MUST NOT contain feature-specific logic for them.
-- **FR-044**: A plugin MUST be able to declare its settings, supply content for a region, and (where it needs outside data) supply data sources, alert sources, or both.
+- **FR-044**: A plugin MUST be able to declare its settings, supply content for a region, and (where it needs outside data) supply data sources, alert sources, or both. An alert source raises alerts through an SDK call that the core routes to the alert display without feature-specific core logic.
 - **FR-045**: The system MUST isolate plugins so that a plugin failure, slowness, or invalid output affects only that plugin's region, and MUST report the failure in status output.
 - **FR-046**: The CLI MUST list available plugins and their declared settings, and MUST allow enabling, disabling, and configuring plugin instances.
 - **FR-047**: The plugin contract MUST be documented well enough to build and test a plugin without a physical panel.

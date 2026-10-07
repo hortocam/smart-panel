@@ -46,7 +46,7 @@ All Technical Context unknowns are resolved below. Each entry is **Decision / Ra
 
 ## 6. Access control for the CLI
 
-**Decision**: The socket lives at `<tmpdir>/smart-panel-<uid>/control.sock` (directory 0755, socket 0666). Every connection is authenticated by kernel peer credentials: `SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS (isolated in `control/peercred.py`). The pure function `access.is_allowed(peer_uid, peer_groups, policy)` allows the runner's own uid, root, any uid in `access.allowed_users`, and any member of `access.allowed_group`. Everyone else gets exit code 5 and the event is logged. `access.*` commands are accepted only from the runner's uid or root.
+**Decision**: The socket lives at `<runtime>/control.sock` where `<runtime>` is `$SMART_PANEL_RUNTIME`, else config `paths.runtime`, else `/tmp/smart-panel`, the same path for every account so allowed non-owner accounts can find it (directory 0755, socket 0666; the runner refuses a pre-existing directory owned by another uid, and the CLI refuses a socket not owned by itself, root, or `$SMART_PANEL_RUNNER_UID`, so a local account cannot impersonate the runner). Every connection is authenticated by kernel peer credentials: `SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS (isolated in `control/peercred.py`). The pure function `access.is_allowed(peer_uid, peer_groups, policy)` allows the runner's own uid, root, any uid in `access.allowed_users`, and any member of `access.allowed_group`. Everyone else gets exit code 5 and the event is logged. `access.*` commands are accepted only from the runner's uid or root.
 
 **Rationale**: FR-051 (clarified: own account plus owner-configured accounts or group). Doing the check in the runner means one policy applies to every command, whether or not file permissions would have allowed access. The home directory stays 0700, which is why the socket is not placed there.
 
@@ -54,7 +54,7 @@ All Technical Context unknowns are resolved below. Each entry is **Decision / Ra
 
 ## 7. Pushes while the runner is down (spool)
 
-**Decision**: If the CLI cannot connect, push-type commands (alerts, resolve, dismiss, counts, values, crawl items) are written to `<tmpdir>/smart-panel-<uid>/spool/` as one JSON file each (mode 0644 inside a sticky 1733 directory) and the CLI reports `saved_for_later`. On startup the runner ingests the spool in receive-time order, verifies each file's owner uid against the access policy, and applies it. Alerts whose display duration has already elapsed since `received_at` are recorded as `expired_in_queue` and counted as missed (clarified behaviour).
+**Decision**: If the CLI cannot connect, push-type commands (alerts, resolve, dismiss, counts, values, crawl items) are written to `<runtime>/spool/` as one JSON file each (mode 0644 inside a sticky 1733 directory) and the CLI reports `saved_for_later`. On startup the runner ingests the spool in receive-time order, verifies each file's owner uid against the access policy, and applies it. Alerts whose display duration has already elapsed since `received_at` are recorded as `expired_in_queue` and counted as missed (clarified behaviour).
 
 **Rationale**: FR-005, FR-007, FR-018 and the edge case on replay. File ownership cannot be forged by an unprivileged user, so the access policy still holds.
 

@@ -19,7 +19,7 @@ Every plugin class has a class attribute `manifest = Manifest(...)`:
 | `version` | str | Plugin version (semantic) |
 | `sdk_version` | str | SDK major version the plugin targets (currently `"1"`) |
 | `summary` | str | One line, shown in `plugin list` |
-| `capabilities` | set | Any of `region`, `overlay`, `datasource` |
+| `capabilities` | set | Any of `region`, `overlay`, `datasource`, `alert_source` (may call `ctx.alert`), `alert_sink` (receives routed alerts; the built-in `alerts` plugin) |
 | `settings` | list of `Setting` | Declared settings (below) |
 | `commands` | list of `Command` | CLI verbs (below) |
 | `source_types` | list of `SourceType` | Only for `datasource`: types of data source it can create |
@@ -85,6 +85,7 @@ Rules:
 | `ctx.http` | Bounded HTTP GET helper (timeout, 2 MB cap, redirects limited, secrets substituted); no other network access is provided |
 | `ctx.clock` | `monotonic()` and `time()`; replaced by a fake clock in tests |
 | `ctx.request_render()` | Mark the region dirty |
+| `ctx.alert(severity, message, title=None, source=None, id=None, ttl=None)` | Raise an alert; requires the `alert_source` capability. The core routes it to the instance declaring `alert_sink`, with the same validation as `alert push` |
 | `ctx.notify(event)` | Emit an event to the log and `status` (for example `source_unreachable`) |
 
 ## Data source plugins
