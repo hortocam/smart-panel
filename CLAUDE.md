@@ -32,6 +32,10 @@ Run scripts from the repo root: `stream_test.py` and `stream_retry.py` open `ass
 
 Spec-driven work lives in `specs/001-status-display-platform/`. The plan adds a `smart_panel` application layer (runner, plugins, CLI) on top of `panel_driver`; it is not implemented yet, so the Architecture section below describes only the existing transport. The plan pointer at the bottom of this file is managed by the agent-context extension (refresh with `uv run --no-project --with pyyaml bash .specify/extensions/agent-context/scripts/bash/update-agent-context.sh`, since the script needs PyYAML).
 
+## Orchestration
+
+Agents (orchestrator, Engineer, Reviewer, hardware agent) should read `docs/orchestration.md` for roles, card breakdown, per-card flow, repository rules, and the hardware handoff, and `docs/hermes-setup.md` for environment prerequisites. `main` is protected: every change arrives by pull request.
+
 ## Architecture
 
 Pipeline: **landscape 1920×462 PIL image → `rotation.to_panel_native` → JPEG encode → `protocol.build_frame_packets` → `device.write_frame`**. `stream.run()` wires this into a render-callback loop. The scripts in `scripts/` duplicate this pipeline by hand instead of calling `stream.run()`.
