@@ -79,8 +79,12 @@ machine" is the default failure mode for this kind of driver.
 - Non-trivial features start as a Spec Kit specification (`/speckit-specify`), followed by plan
   and tasks. Small fixes and documentation changes MAY skip this and go straight to a pull
   request.
-- All changes land through pull requests to `main`; direct pushes are reserved for maintainers
-  fixing a broken `main`.
+- All changes land through pull requests to `main`. The `main` branch MUST be protected on the
+  hosting platform: a pull request is required before merge, the CI status checks from Phase 0
+  MUST pass, force pushes and branch deletion are disabled, and the rules apply to administrators
+  too. A maintainer fixing a broken `main` uses an expedited pull request, not a direct push.
+  The protection settings MUST be recorded in the repository (script and documentation) so they
+  can be reviewed and re-applied.
 - A pull request MUST describe what changed and why, state how it was tested (automated tests
   and, where relevant, hardware as described in Principle IV), and link any protocol evidence.
 - At least one maintainer review is required before merge; while the project has a single
@@ -103,4 +107,4 @@ for clarifications and wording. Compliance is reviewed at pull request time (see
 Workflow) and revisited whenever the supported hardware, platforms, or dependencies change.
 Runtime guidance for AI coding agents lives in `CLAUDE.md`.
 
-**Version**: 1.0.0 | **Ratified**: 2026-10-06 | **Last Amended**: 2026-10-06
+**Version**: 1.1.0 | **Ratified**: 2026-10-06 | **Last Amended**: 2026-10-07
