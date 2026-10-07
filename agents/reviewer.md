@@ -44,7 +44,12 @@ what the PR body claims.
 CT 914, **no panel attached** — and that is the point: the whole suite must be verifiable
 without hardware (constitution Principle IV).
 
-- `python3` here has no `pip`, `pytest`, `Pillow`, `hid` or `tshark`. Use a venv.
+- **`gh` must be invoked as `bash /home/hermes/.hermes/bin/agent-gh.sh …`**, not bare `gh`.
+  A PR you open must be authored by the machine account `hortocam-agents`, not the human —
+  the whole reason an independent reviewer exists is that the audit shows who did what. The
+  wrapper resolves the machine token at use time and fails loudly rather than falling back.
+- `python3` here has no `pip`, `pytest`, `Pillow`, `hid` or `tshark`. Use a venv (`uv` works:
+  `uv venv --python 3.11 .v && uv pip install --python .v/bin/python -e ".[dev]"`).
 - `pytest -m "not hardware"` is the applicable suite; `ruff check .` must be clean.
 - **Do not run destructive commands.** No `rm -rf`, no clearing a directory — `mkdir -p` a
   fresh scratch dir instead. Run multi-line probes as script files, never inline `python3 -c`.
