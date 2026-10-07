@@ -34,7 +34,7 @@ Spec-driven work lives in `specs/001-status-display-platform/`. The plan adds a 
 
 ## Orchestration
 
-Agents (orchestrator, Engineer, Reviewer, hardware agent) should read `docs/orchestration.md` for roles, card breakdown, per-card flow, repository rules, and the hardware handoff, and `docs/hermes-setup.md` for environment prerequisites. `main` is protected: every change arrives by pull request.
+Agents (orchestrator, Engineer, Reviewer, hardware agent) should read `docs/orchestration.md` for roles, card breakdown, per-card flow, repository rules, and the hardware handoff, and `docs/hermes-setup.md` for environment prerequisites. `main` will be protected once the owner applies T133 (pull request and CI required, no force pushes); until then, still use pull requests for every change and never push to `main`.
 
 ## Architecture
 

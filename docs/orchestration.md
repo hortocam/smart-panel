@@ -25,7 +25,7 @@ How to run the work in `specs/001-status-display-platform/` with an orchestrator
 
 | Card | Tasks | Notes |
 |---|---|---|
-| P1 Setup and CI | T001 to T014, T133 | One PR. T129 (hardware) and T133 (owner action) are separate sub-cards. Must be green in CI before anything else merges. |
+| P1 Setup and CI | T001 to T015, T129, T133 | One PR for T001 to T014 and the T015 checkpoint. T129 (hardware) and T133 (owner action) are separate sub-cards. The P1 PR merges first; the owner then applies branch protection (T133) after the first green CI run, and P2 does not start until protection is verified active on `main`. |
 | P2 Foundational | T016 to T035 | One PR, or split along file boundaries listed in `tasks.md` `[P]` markers. Blocks everything after it. |
 | US1 Runner and CLI | T036 to T062 | The MVP. T130 (hardware) gates T062. |
 | US2 Alerts | T063 to T073, T131, T132 | After US1. |
@@ -46,6 +46,12 @@ Checkbox state in `tasks.md` is the source of truth for progress. Engineers tick
   - `tasks.md` itself (checkbox edits); keep each PR to its own task lines.
 - Do not split a card so that two agents edit the same file at the same time. `[P]` in `tasks.md` already means different files.
 
+## Spec Kit mechanics for parallel agents
+
+- Spec Kit resolves the feature from `.specify/feature.json` (`specs/001-status-display-platform`), not from the branch name, so card branches such as `001-p1-setup-ci` are safe.
+- Set `SPECIFY_FEATURE_DIRECTORY=specs/001-status-display-platform` and `SPECIFY_FEATURE_NO_PERSIST=1` in every agent's environment so concurrent runs never rewrite `.specify/feature.json`.
+- The git extension registers optional auto-commit hooks. Agents commit manually per task or logical group and decline the optional prompts unless the orchestrator says otherwise.
+
 ## Per-card flow
 
 1. Orchestrator creates the card with: task IDs, the files named in those tasks, the dependency cards that must be merged, and the done criteria below. Branch name: `NNN-<card>` such as `001-p1-setup-ci`, cut from up-to-date `main`.
@@ -55,11 +61,11 @@ Checkbox state in `tasks.md` is the source of truth for progress. Engineers tick
 5. After approval and green CI, the PR is merged (one PR per phase or story; no direct pushes).
 6. Orchestrator unblocks dependent cards.
 
-Done criteria for every card: its tests pass with `pytest` (hardware tests are skipped by default), `ruff check .` is clean, docs changed with behavior, the task boxes are ticked, CI is green on Linux and macOS, and the Reviewer has approved.
+The bootstrap PR that introduced the spec, plan, tasks and these docs has no CI yet and merges on owner review alone. Done criteria for every card: its tests pass with `pytest` (hardware tests are skipped by default), `ruff check .` is clean, docs changed with behavior, the task boxes are ticked, CI is green on Linux and macOS, and the Reviewer has approved.
 
 ## Repository rules that bind every agent
 
-- `main` is protected (constitution, Contribution Workflow). All changes arrive by pull request with passing CI. T133 applies the protection after the first green CI run; until then, still use pull requests.
+- `main` will be protected (constitution, Contribution Workflow): pull request required, CI checks required, no force pushes, applied to administrators. T133 applies the protection after the first green CI run; until then it is not enforced by the platform, so still use pull requests for every change and never push to `main`.
 - Commits and PRs carry the attribution lines the session provides.
 - Every `dev.write` keeps the `b"\x00"` prefix and stays inside `panel_driver/device.py`.
 - No byte sequence the vendor capture does not show may run on a default path. Brightness `0` is unverified until T129 reports.

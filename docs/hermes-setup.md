@@ -14,7 +14,7 @@ The VM never touches the panel. The Pi runs only hardware jobs the orchestrator 
 
 ## Hermes VM
 
-- [ ] Clone of `hortocam/smart-panel` with push access to feature branches and permission to open PRs. It does not need admin rights; branch protection is applied by the owner.
+- [ ] Clone of `hortocam/smart-panel` with push access to feature branches and permission to open PRs. It does not need admin rights; branch protection will be applied by the owner (T133) after the first green CI run.
 - [ ] `git` identity set, and commits include the attribution lines the session provides.
 - [ ] `gh` authenticated (read CI results, open PRs, comment on PRs).
 - [ ] Python 3.11 or newer, with `pip install -e ".[dev]"` working in a venv. Optional: `uv` for the agent-context refresh in `CLAUDE.md`.
@@ -23,7 +23,8 @@ The VM never touches the panel. The Pi runs only hardware jobs the orchestrator 
 - [ ] Spec Kit skills available: `/speckit-implement`, `/speckit-converge`, `/speckit-analyze`, `/speckit-tasks`.
 - [ ] The Engineer and Reviewer run on models of different lineage. The existing Hermes hooks must reject a review requested from the same lineage as the PR's author. **Confirm** that the hook identifies lineage from the model, not the agent name.
 - [ ] Hooks link each card to the speckit command it must run (implement for Engineer, converge for Reviewer) and to the PR.
-- [ ] The orchestrator reads `CLAUDE.md` and `docs/orchestration.md` from `main` to orient. After the first PR merges, `main` contains both.
+- [ ] The orchestrator reads `CLAUDE.md` and `docs/orchestration.md` from `main` to orient. After the bootstrap PR merges, `main` contains both.
+- [ ] Every agent's environment sets `SPECIFY_FEATURE_DIRECTORY=specs/001-status-display-platform` and `SPECIFY_FEATURE_NO_PERSIST=1`.
 
 ## Raspberry Pi 4B
 
