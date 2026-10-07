@@ -96,6 +96,36 @@ These commands are sent **once** at the start of a session, not periodically.
 The vendor software sends them immediately after the HID GET_REPORT
 (firmware version query) and before the first video frame.
 
+### Value validation at the library boundary (T007 hardening)
+
+Values that reach the wire are validated before any packet is built
+(constitution Principle II — the panel's USB controller has been observed to
+hang on a malformed stream, and the firmware is not user-recoverable). The
+brightness boundary is enforced at **two levels on purpose**, so a regression in
+one layer cannot put an out-of-range value on the wire:
+
+| Value | Constraint | Enforced in | Failure mode |
+|---|---|---|---|
+| Backlight brightness | `int` in `0..100`; `bool` rejected | `protocol.validate_brightness`, called by `protocol.build_init_packets` / `protocol.build_backlight_packet` and re-checked by `device.init_display` / `device.set_backlight` | `ValueError`, and **no bytes are written** |
+| Frame length | `32 + len(jpeg) <= 65535` (uint16 field at bytes 10–11) | `protocol.build_frame_packets` | `ValueError` |
+
+`int` is required strictly: a `float`, numeric string, `None`, or `bool` is
+rejected rather than coerced, so a mis-typed configuration cannot silently
+truncate to a uint16 on the wire.
+
+**No byte sequence the vendor capture does not show may run on a default
+path.** Only the three observed commands (`CRTDIS`, `CRTLIG`, `CRTDRA`) are
+emitted, and every `dev.write` keeps the `b"\x00"` report-ID prefix (1025 bytes)
+and stays inside `panel_driver/device.py`. Header bytes **12–13 remain
+unverified** (see the header table above and open item 2): they are reproduced
+as the observed constant (`b1 00` for CRTDRA, `00 00` for CRTDIS/CRTLIG), not
+treated as a decoded or load-bearing field.
+
+Brightness `0` is documented as "backlight off" but remains **unverified on
+hardware** until the T129 smoke test records its observed effect; if `0` proves
+unsafe or does not blank the panel, the lower bound becomes 1 and FR-011 is
+amended.
+
 ### macOS hidapi report ID quirk (empirically discovered)
 
 On macOS, hidapi's `write()` uses `IOHIDDeviceSetReport` which treats the

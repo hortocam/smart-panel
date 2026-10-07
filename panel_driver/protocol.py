@@ -12,13 +12,13 @@ Init sequence (must be sent before first frame):
   3. CRTDRA  — the actual JPEG frame (repeated for streaming)
 
 Header layout (bytes 0–31):
-  [0:5]   b"CRT\x00\x00"
-  [5:10]  command name, e.g. b"DRA\x00\x00", b"DIS\x00\x00", b"LIG\x00\x00"
+  [0:5]   b"CRT\\x00\\x00"
+  [5:10]  command name, e.g. b"DRA\\x00\\x00", b"DIS\\x00\\x00", b"LIG\\x00\\x00"
   [10:12] big-endian uint16:
             - For DRA: 32 + len(jpeg_bytes)
             - For LIG: brightness value (0-100)
             - For DIS: 32 (no payload)
-  [12:14] b"\xb1\x00" for DRA, b"\x00\x00" for DIS/LIG
+  [12:14] b"\\xb1\\x00" for DRA, b"\\x00\\x00" for DIS/LIG
   [14:32] zero padding
   [32:]   payload (JPEG for DRA, empty for DIS/LIG)
 """
@@ -30,8 +30,45 @@ PREAMBLE_LEN = 32
 PACKET_SIZE = 1024
 # Bytes 12–13: observed constant for CRTDRA frames across two different frame sizes.
 # For CRTDIS and CRTLIG these are 0x00 0x00.
+# UNVERIFIED: the meaning of the b1 00 pair has only two sample points in the
+# vendor capture; it is treated as a constant, not a decoded field (handoff
+# doc section 4, item 2).
 HEADER_FLAGS_DRA = b"\xb1\x00"
 HEADER_FLAGS_INIT = b"\x00\x00"
+
+# Brightness (CRTLIG bytes 10–11) is written as a uint16 but only 0..100 is
+# meaningful; the boundary is enforced here and again in device.py.
+BRIGHTNESS_MIN = 0
+BRIGHTNESS_MAX = 100
+
+
+def validate_brightness(brightness: int) -> int:
+    """Validate a backlight brightness value.
+
+    Args:
+        brightness: Candidate brightness.
+
+    Returns:
+        The same value when it is a valid int in 0..100.
+
+    Raises:
+        ValueError: If ``brightness`` is not an ``int`` (``bool`` included, as
+            it is a subclass of ``int`` but not a brightness) or is outside
+            0..100. The panel's USB controller has been observed to hang on a
+            malformed stream, so the value is rejected at the library boundary
+            before any packet is built (constitution Principle II).
+    """
+    if isinstance(brightness, bool) or not isinstance(brightness, int):
+        raise ValueError(
+            f"brightness must be an int in {BRIGHTNESS_MIN}..{BRIGHTNESS_MAX}, "
+            f"got {type(brightness).__name__} ({brightness!r})"
+        )
+    if not BRIGHTNESS_MIN <= brightness <= BRIGHTNESS_MAX:
+        raise ValueError(
+            f"brightness must be in {BRIGHTNESS_MIN}..{BRIGHTNESS_MAX}, "
+            f"got {brightness}"
+        )
+    return brightness
 
 
 def _build_command_packet(
@@ -42,7 +79,7 @@ def _build_command_packet(
     """Build a single 1024-byte packet for a CRT command.
 
     Args:
-        command: 5-byte command name (e.g. b"DRA\x00\x00", b"DIS\x00\x00", b"LIG\x00\x00")
+        command: 5-byte command name (e.g. b"DRA\\x00\\x00", b"DIS\\x00\\x00", b"LIG\\x00\\x00")
         value: For DRA: 32 + len(payload). For LIG: brightness (0-100). For DIS: 32.
         payload: JPEG bytes for DRA, empty for DIS/LIG.
 
@@ -73,7 +110,11 @@ def build_init_packets(brightness: int = 50) -> list[bytes]:
 
     Returns:
         List of 2 packets: [CRTDIS, CRTLIG]
+
+    Raises:
+        ValueError: If ``brightness`` is not an int in 0..100.
     """
+    validate_brightness(brightness)
     dis = _build_command_packet(b"DIS\x00\x00", value=PREAMBLE_LEN)
     # CRTLIG uses bytes 10-11 for brightness, not a length
     lig = _build_command_packet(b"LIG\x00\x00", value=brightness)
@@ -90,7 +131,11 @@ def build_backlight_packet(brightness: int) -> bytes:
 
     Returns:
         A single 1024-byte packet.
+
+    Raises:
+        ValueError: If ``brightness`` is not an int in 0..100.
     """
+    validate_brightness(brightness)
     return _build_command_packet(b"LIG\x00\x00", value=brightness)
 
 
