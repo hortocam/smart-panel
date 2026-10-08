@@ -70,10 +70,17 @@ Verified: a 14,547-byte JPEG (near-solid-black test) → 14,579 total →
 
 - The vendor software **continuously re-sends frames** even for static
   content — this is a video-style push, not "set once and forget."
-  535 frames were observed across the capture window.
-- Approx. inter-packet timing in the capture was ~12ms per
-  packet-then-ack pair — treat this as a rough reference for a safe refresh
-  rate, not a hard requirement (untested lower bound).
+- *(measured)* 340 `CRTDRA` frames were sent in 19.3 s (**17.6 fps** average),
+  with a **median frame interval of 61 ms**. A 58-packet frame (about 58 KB)
+  transferred in a **median 13 ms**, roughly **0.23 ms per packet**. The vendor
+  is therefore pacing itself rather than being bandwidth-limited by the link.
+- **Measured on Windows** (the vendor-software capture host); hidapi on Linux
+  (hidraw) and macOS may be slower, which is why the sustainable rate is
+  re-measured on the target with `scripts/bench_throughput.py` (see decision 1
+  in `research.md`).
+- This supersedes the earlier per-packet-timing estimate in this section, which
+  did not match the capture. Treat 17.6 fps as the observed vendor figure, not a
+  hard requirement; the practical lower bound is still untested (see section 4).
 
 ### Init sequence (required before first frame)
 
