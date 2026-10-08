@@ -27,6 +27,19 @@ include = ["panel_driver*", "smart_panel*"]
 [tool.setuptools.package-data]
 smart_panel = ["assets/**/*"]
 
+[tool.ruff]
+# Match requires-python above; isort's forced-sort order is target-version
+# sensitive, so pinning it keeps import order stable across ruff releases.
+target-version = "py311"
+line-length = 100
+# `.specify/extensions/*/scripts/python/*.py` is vendored spec-kit tooling
+# (installed by `specify init` and tracked in git), not project code; excluding
+# it keeps `ruff check .` reporting only findings this repository owns.
+extend-exclude = [".specify"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

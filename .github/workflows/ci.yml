@@ -1,0 +1,49 @@
+name: CI
+
+# Phase 1 (T009) of specs/001-status-display-platform. Linux and macOS are both
+# first-class targets (constitution Principle V), so the suite runs on both. No
+# physical panel exists in CI, so only the non-hardware selection runs; the
+# `hardware`-marked tests are skipped by the pytest `addopts` default and are
+# exercised on the Raspberry Pi / dev Mac through the hardware-agent handoff.
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # The `hid` package is a ctypes binding and needs the hidapi shared
+      # library present for `import hid` to succeed.
+      - name: Install hidapi (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libhidapi-hidraw0
+
+      - name: Install hidapi (macOS)
+        if: runner.os == 'macOS'
+        run: brew install hidapi
+
+      - name: Install project with dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test (hardware tests skipped)
+        run: pytest -m "not hardware"

@@ -8,14 +8,15 @@ The script waits for you to press Enter, then opens the device and streams.
 Power-cycle the panel just before pressing Enter.
 """
 
-import sys
-import os
 import io
+import os
+import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from PIL import Image
+
 from panel_driver.device import open_device, write_frame
 from panel_driver.protocol import build_frame_packets
 from panel_driver.rotation import to_panel_native

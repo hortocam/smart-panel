@@ -5,15 +5,16 @@ The panel's firmware has a timeout. This script retries the HID open
 in a loop so it catches the device as soon as it's reconnected.
 """
 
-import sys
-import os
 import io
+import os
+import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import hid
 from PIL import Image
+
 from panel_driver.protocol import build_frame_packets
 from panel_driver.rotation import to_panel_native
 
