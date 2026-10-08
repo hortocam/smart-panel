@@ -113,9 +113,15 @@ the 32-byte preamble length.
 > reproduces the captured CRTDIS and CRTLIG packets **byte-for-byte**.
 
 The CRTDIS and CRTLIG packets use the same 32-byte header format as CRTDRA
-but with `\x00\x00` for bytes 12-13 instead of `\xb1\x00`. The payload
-after the header is either empty (CRTDIS) or a 2-byte brightness value
-(CRTLIG). The rest of the 1024-byte packet is zero-padded.
+but with `\x00\x00` for bytes 12-13 instead of `\xb1\x00`. Like CRTDIS, CRTLIG
+carries **no payload**: the brightness lives only in header bytes 10-11
+(little-endian), and the entire 1024-byte packet after the 32-byte header is
+zero padding for both commands. (An earlier revision of this paragraph claimed
+a 2-byte CRTLIG payload; the single captured CRTLIG packet has no nonzero byte
+after header byte 12 — bytes 12-31 and 32-1023 are all `00` — so that clause was
+removed. Appending a payload would also double-count the brightness already in
+bytes 10-11, and no byte sequence the capture does not show may run on a default
+path, constitution Principle II.)
 
 These commands are sent **once** at the start of a session, not periodically.
 The vendor software sends them immediately after the HID GET_REPORT
