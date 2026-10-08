@@ -228,7 +228,7 @@ dev.write(b"\\x00" + packet)  # macOS: 0x00 RID + 1024 data = 1025 bytes total
    ~~writing `CRTDRA` frames cold after opening the HID handle.~~
    **RESOLVED:** Two init commands must be sent before the first CRTDRA frame:
    - `CRTDIS` — display init (32-byte header + zeros, flags `\x00\x00`)
-   - `CRTLIG` — backlight on (32-byte header + uint16 brightness value, little-endian, flags `\x00\x00`)
+   - `CRTLIG` — backlight on (brightness in header bytes 10-11, little-endian; no payload — the rest of the 1024-byte packet after the 32-byte header is zero padding; flags `\x00\x00`)
    Without these, the panel's USB controller goes unresponsive after ~60-70s.
 4. **Minimum sustained frame rate** — untested whether the panel
    blanks/times out if frames stop coming, and what the practical minimum
