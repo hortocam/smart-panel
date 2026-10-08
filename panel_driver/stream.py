@@ -9,11 +9,11 @@ Init sequence (CRTDIS + CRTLIG) is sent once before the first frame.
 
 import io
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from PIL import Image
 
-from .device import open_device, init_display, write_frame
+from .device import init_display, open_device, write_frame
 from .protocol import build_frame_packets
 from .rotation import to_panel_native
 
@@ -24,7 +24,7 @@ def run(
     clockwise: bool = True,
     jpeg_quality: int = 70,
     brightness: int = 50,
-    max_frames: Optional[int] = None,
+    max_frames: int | None = None,
 ) -> None:
     """Continuously render and push frames to the panel.
 

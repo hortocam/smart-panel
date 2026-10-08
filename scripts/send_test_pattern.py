@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from PIL import Image
 
-from panel_driver.device import open_device, init_display, write_frame
+from panel_driver.device import open_device, write_frame
 from panel_driver.protocol import build_frame_packets
 from panel_driver.rotation import to_panel_native
 
