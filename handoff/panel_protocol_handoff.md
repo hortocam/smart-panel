@@ -88,11 +88,24 @@ A second capture (fullpaneltest.pcapng) revealed two mandatory init commands
 that must be sent before the first CRTDRA frame. Without them, the panel's
 USB controller goes unresponsive after ~60-70 seconds.
 
-| Order | Command | Header bytes 5-9 | Payload | Flags (12-13) |
+| Order | Command | Header bytes 5-9 | Bytes 10-11 | Flags (12-13) |
 |---|---|---|---|---|
-| 1 | CRTDIS | `DIS\x00\x00` | empty (all zeros) | `\x00\x00` |
-| 2 | CRTLIG | `LIG\x00\x00` | uint16 brightness (e.g. `\x00\x32` = 50) | `\x00\x00` |
-| 3+ | CRTDRA | `DRA\x00\x00` | raw JPEG | `\xb1\x00` |
+| 1 | CRTDIS | `DIS\x00\x00` | `\x00\x00` (zero) | `\x00\x00` |
+| 2 | CRTLIG | `LIG\x00\x00` | uint16 brightness, **little-endian** (`\x32\x00` = 50) | `\x00\x00` |
+| 3+ | CRTDRA | `DRA\x00\x00` | uint16 length = 32 + len(jpeg), **big-endian** | `\xb1\x00` |
+
+The byte order of the bytes 10-11 field is **per command**: CRTDRA uses big-endian
+(the capture's first frame reads `\x38\xf3` = 14,579 = 32 + 14,547), while CRTLIG uses
+**little-endian** (brightness `\x32\x00` = 50; read as big-endian the same bytes are
+12,800, i.e. out of range). CRTDIS carries an explicit zero in this field — it is not
+the 32-byte preamble length.
+
+> History: an earlier revision of this table wrote the CRTLIG example as `\x00\x32`
+> (big-endian), which contradicted the capture it cites. The capture is authoritative
+> (constitution Principle I); the table now matches it byte-for-byte, and
+> `tests/unit/test_protocol.py::test_crtlig_carries_brightness_50_in_bytes_10_11`
+> pins the wire order. `build_init_packets()` and `build_backlight_packet()` were
+> corrected to match in the same change that fixed this table.
 
 The CRTDIS and CRTLIG packets use the same 32-byte header format as CRTDRA
 but with `\x00\x00` for bytes 12-13 instead of `\xb1\x00`. The payload
@@ -157,7 +170,7 @@ dev.write(b"\\x00" + packet)  # macOS: 0x00 RID + 1024 data = 1025 bytes total
    ~~writing `CRTDRA` frames cold after opening the HID handle.~~
    **RESOLVED:** Two init commands must be sent before the first CRTDRA frame:
    - `CRTDIS` — display init (32-byte header + zeros, flags `\x00\x00`)
-   - `CRTLIG` — backlight on (32-byte header + uint16 brightness value, flags `\x00\x00`)
+   - `CRTLIG` — backlight on (32-byte header + uint16 brightness value, little-endian, flags `\x00\x00`)
    Without these, the panel's USB controller goes unresponsive after ~60-70s.
 4. **Minimum sustained frame rate** — untested whether the panel
    blanks/times out if frames stop coming, and what the practical minimum
@@ -166,10 +179,6 @@ dev.write(b"\\x00" + packet)  # macOS: 0x00 RID + 1024 data = 1025 bytes total
    ~~anything back (status/ack/button-press data if this panel has any~~
    ~~physical controls) that the app reads.~~
    **RESOLVED:** No IN-endpoint data observed during streaming. The device is write-only.
-
----
-
-## 5. Proposed Python application architecture
 
 ---
 
