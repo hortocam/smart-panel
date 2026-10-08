@@ -10,23 +10,29 @@ Python driver for a HOTSPOTEK USB HID bar display (VID/PID `0x5548:0x1011`), rev
 
 ## Commands
 
-There is no test suite, linter, or build step configured yet. pytest is the chosen test framework (`pip install -e ".[dev]"` once the packaging below is fixed, or `pip install pytest`), and CI is planned for Phase 0. Until tests exist, scripts are the only way to exercise code, and most need the physical panel attached.
+Setup from a fresh checkout: create and activate a virtualenv, then `pip install -e ".[dev]"` installs the package editable with everything the tests need (`pytest`, `ruff`, `psutil`, `defusedxml`). There is a test suite (pytest), a linter (ruff), and CI (`.github/workflows/ci.yml`): `ruff check .` must pass and `pytest` must pass with no panel attached (hardware-marked tests are skipped by default). The transport-only install without test tooling is `pip install -e .`.
 
 The project is MIT licensed (`LICENSE`), with a `CODE_OF_CONDUCT.md`. The project constitution lives at `.specify/memory/constitution.md` and governs spec-driven work (Spec Kit skills: `/speckit-specify`, `/speckit-plan`, etc.).
 
 ```bash
 source .venv/bin/activate
-pip install hid Pillow            # deps; `pip install -e .` currently fails (see below)
+pip install -e ".[dev]"        # editable install + test tooling; ".[app]" adds psutil/defusedxml for the application layer
 
-python scripts/send_test_pattern.py [--ccw] [--loop N]   # one-shot/short orientation check
-python scripts/stream.py          # stream assets/landscape_bg.jpg, retries open for 60s
-python scripts/stream_test.py     # stream test pattern after pressing Enter
-python scripts/stream_retry.py    # stream test pattern, retries open until device appears
+ruff check .                   # lint (configured in pyproject.toml [tool.ruff]); must be clean
+pytest                         # non-hardware suite (the hardware marker is deselected by default)
+pytest -m "not hardware"       # the same selection spelled out, as CI runs it
+
+python scripts/send_test_pattern.py [--ccw] [--loop N]   # one-shot/short orientation check (needs the panel)
+python scripts/stream.py           # stream assets/landscape_bg.jpg, retries open for 60s (needs the panel)
+python scripts/stream_test.py      # stream test pattern after pressing Enter (needs the panel)
+python scripts/stream_retry.py     # stream test pattern, retries open until device appears (needs the panel)
+python scripts/extract_fixtures.py # rebuild tests/fixtures/*.bin/*.jpg from handoff/fullpaneltest.pcapng (needs tshark)
+python scripts/bench_throughput.py # packets/s, frame times, sustainable fps (hardware-only; see its docstring)
 ```
 
-Run scripts from the repo root: `stream_test.py` and `stream_retry.py` open `assets/test_pattern_1920x462.png` by relative path. Each script prepends the repo root to `sys.path`, so the package does not need to be installed.
+Run scripts from the repo root: `stream_test.py` and `stream_retry.py` open `assets/test_pattern_1920x462.png` by relative path. Each script prepends the repo root to `sys.path`, so the package does not need to be installed. The committed `tests/fixtures/` mean `pytest` runs with neither a panel nor `tshark`.
 
-`pyproject.toml` has `build-backend = "setuptools.backends._legacy:_Backend"`, which is not a valid backend (should be `setuptools.build_meta`), so `pip install -e .` will fail until that is fixed. Its `send-test-pattern` entry point also points at `scripts.send_test_pattern`, but `scripts/` is excluded from the package list.
+CI (`.github/workflows/ci.yml`) runs `ruff check .` and `pytest -m "not hardware"` on Linux and macOS with Python 3.11 and 3.13, on every push to `main` and every pull request. The `smart-panel` console entry point is declared in `pyproject.toml`, but the CLI itself lands with the Phase 3 `smart_panel` application layer; until then the scripts above are the way to exercise the panel.
 
 ## Active feature
 
