@@ -104,17 +104,75 @@ the 32-byte preamble length.
 > (big-endian), which contradicted the capture it cites. The capture is authoritative
 > (constitution Principle I); the table now matches it byte-for-byte, and
 > `tests/unit/test_protocol.py::test_crtlig_carries_brightness_50_in_bytes_10_11`
-> pins the wire order. `build_init_packets()` and `build_backlight_packet()` were
-> corrected to match in the same change that fixed this table.
+> pins the wire order. The builder functions, however, did **not** follow in the
+> same change: `build_init_packets()` still emitted big-endian brightness and wrote
+> the 32-byte preamble length into the CRTDIS field. Both defects survived review
+> because the golden tests only pinned the *fixtures*, never the builder. The T007
+> change reconciles the builder with this table:
+> `tests/unit/test_protocol_init_order.py` now asserts `build_init_packets(50)`
+> reproduces the captured CRTDIS and CRTLIG packets **byte-for-byte**.
 
 The CRTDIS and CRTLIG packets use the same 32-byte header format as CRTDRA
-but with `\x00\x00` for bytes 12-13 instead of `\xb1\x00`. The payload
-after the header is either empty (CRTDIS) or a 2-byte brightness value
-(CRTLIG). The rest of the 1024-byte packet is zero-padded.
+but with `\x00\x00` for bytes 12-13 instead of `\xb1\x00`. Like CRTDIS, CRTLIG
+carries **no payload**: the brightness lives only in header bytes 10-11
+(little-endian), and the entire 1024-byte packet after the 32-byte header is
+zero padding for both commands. (An earlier revision of this paragraph claimed
+a 2-byte CRTLIG payload; the single captured CRTLIG packet has no nonzero byte
+after header byte 12 — bytes 12-31 and 32-1023 are all `00` — so that clause was
+removed. Appending a payload would also double-count the brightness already in
+bytes 10-11, and no byte sequence the capture does not show may run on a default
+path, constitution Principle II.)
 
 These commands are sent **once** at the start of a session, not periodically.
 The vendor software sends them immediately after the HID GET_REPORT
 (firmware version query) and before the first video frame.
+
+### Value validation at the library boundary (T007 hardening)
+
+Values that reach the wire are validated before any packet is built
+(constitution Principle II — the panel's USB controller has been observed to
+hang on a malformed stream, and the firmware is not user-recoverable). The
+brightness boundary is enforced at **two levels on purpose**, so a regression in
+one layer cannot put an out-of-range value on the wire:
+
+| Value | Constraint | Enforced in | Failure mode |
+|---|---|---|---|
+| Backlight brightness | `int` in `0..100`; `bool` rejected | `protocol.validate_brightness`, called by `protocol.build_init_packets` / `protocol.build_backlight_packet` and re-checked by `device.init_display` / `device.set_backlight` | `ValueError`, and **no bytes are written** |
+| Frame length | `32 + len(jpeg) <= 65535` (uint16 field at bytes 10–11) | `protocol.build_frame_packets` | `ValueError` |
+
+`int` is required strictly: a `float`, numeric string, `None`, or `bool` is
+rejected rather than coerced, so a mis-typed configuration cannot silently
+truncate to a uint16 on the wire.
+
+**CRTDIS and CRTLIG byte order (the reconciliation this change lands).** The
+builders now reproduce the capture byte-for-byte, and the order is **per
+command**:
+
+- **CRTDIS** — bytes 10–11 are `00 00`, an explicit zero. The builder previously
+  wrote the 32-byte preamble length there.
+- **CRTLIG** — bytes 10–11 are the brightness **little-endian** (`32 00` = 50).
+  The builder previously wrote it big-endian (`00 32`), contradicting the capture
+  table above.
+- **CRTDRA** — bytes 10–11 stay **big-endian** (`32 + len(jpeg)`); this was
+  already correct.
+
+The regression that let both defects through was that the golden tests pinned the
+*fixtures* but never asserted the builder reproduced them;
+`tests/unit/test_protocol_init_order.py` closes that gap.
+
+**No byte sequence the vendor capture does not show may run on a default
+path.** Only the three observed commands (`CRTDIS`, `CRTLIG`, `CRTDRA`) are
+emitted, and every `dev.write` keeps the `b"\x00"` report-ID prefix (1025 bytes)
+and stays inside `panel_driver/device.py` (asserted by a fake-device test that
+records every write). Header bytes **12–13 remain unverified** (see the header
+table above and open item 2): they are reproduced as the observed constant
+(`b1 00` for CRTDRA, `00 00` for CRTDIS/CRTLIG), not treated as a decoded or
+load-bearing field.
+
+Brightness `0` is documented as "backlight off" but remains **unverified on
+hardware** until the T129 smoke test records its observed effect; if `0` proves
+unsafe or does not blank the panel, the lower bound becomes 1 and FR-011 is
+amended.
 
 ### macOS hidapi report ID quirk (empirically discovered)
 
@@ -170,7 +228,7 @@ dev.write(b"\\x00" + packet)  # macOS: 0x00 RID + 1024 data = 1025 bytes total
    ~~writing `CRTDRA` frames cold after opening the HID handle.~~
    **RESOLVED:** Two init commands must be sent before the first CRTDRA frame:
    - `CRTDIS` — display init (32-byte header + zeros, flags `\x00\x00`)
-   - `CRTLIG` — backlight on (32-byte header + uint16 brightness value, little-endian, flags `\x00\x00`)
+   - `CRTLIG` — backlight on (brightness in header bytes 10-11, little-endian; no payload — the rest of the 1024-byte packet after the 32-byte header is zero padding; flags `\x00\x00`)
    Without these, the panel's USB controller goes unresponsive after ~60-70s.
 4. **Minimum sustained frame rate** — untested whether the panel
    blanks/times out if frames stop coming, and what the practical minimum
