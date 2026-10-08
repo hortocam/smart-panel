@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Python driver for a HOTSPOTEK USB HID bar display (VID/PID `0x5548:0x1011`), reverse-engineered from a USBPcap capture of the vendor Windows software. Target hosts are macOS and Raspberry Pi/Linux. The eventual goal is a stats-rendering layer (clock, CPU/mem/temp) on top of the transport; only the transport exists so far. `README.md` is empty.
+Python driver for a HOTSPOTEK USB HID bar display (VID/PID `0x5548:0x1011`), reverse-engineered from a USBPcap capture of the vendor Windows software. Target hosts are macOS and Raspberry Pi/Linux. The eventual goal is a stats-rendering layer (clock, CPU/mem/temp) on top of the transport; only the transport exists so far. See `README.md` for install, hardware, and the Linux udev rule.
 
 `handoff/panel_protocol_handoff.md` is the authoritative protocol write-up (header layout, init sequence, open questions). Read it before changing anything in `panel_driver/`. Note that its section 5 "proposed architecture" is partly aspirational: `render.py` and `probe_init_sequence.py` do not exist.
 
