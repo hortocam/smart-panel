@@ -82,6 +82,79 @@ Verified: a 14,547-byte JPEG (near-solid-black test) → 14,579 total →
   did not match the capture. Treat 17.6 fps as the observed vendor figure, not a
   hard requirement; the practical lower bound is still untested (see section 4).
 
+### Hardware behaviour on the Raspberry Pi 4B — measured 2026-10-09 (T129)
+
+First sustained test on real hardware (Raspberry Pi 4B Rev 1.2, Debian 13 trixie,
+Python 3.13.5, panel on USB, `pi` in `plugdev`, udev rule from T010 installed).
+Full raw logs: the T129 card. Summary of what was actually observed:
+
+**The panel intermittently stops accepting OUT reports; it is not a rate, link,
+or byte-order effect.**
+
+| Variable | Test | Result |
+|---|---|---|
+| Pi supply | old PSU vs **5 V / 5 A** | Old: `vcgencmd get_throttled = 0x50000` (under-voltage + throttling occurred). New: **`0x0`**. Fixed — and did **not** stop the panel failures. |
+| USB cable / port | two cables, hub port vs direct | No change. |
+| **Init byte order (T007)** | LE `CRTLIG` (fixed code) vs BE (old code), interleaved, 3× each | **No separation**: LE died at 139 / 224 / 33 frames; BE at 281 / 273 / 46. The T007 fix is *correct per the capture* but is **not** what causes or prevents the stall. |
+| Write length | `b"\x00"+pkt` (1025 B) vs bare `pkt` (1024 B) | No difference (196 vs 222 frames before failure). |
+| Frame rate | 15 / 10 / 5 / 2 fps for 60 s each | No threshold. 15 fps reached 629 frames then died; **2 fps died after only 43**. |
+| IN endpoint drain | `read()` before each frame | The panel sends **0 bytes** on IN. Draining changes nothing. |
+| USB-level event | track the panel's `devnum` across failures | **Unchanged** (11→11) across all six probe-9 failures: no disconnect, no re-enumeration. |
+
+**Signature of the failure:** `hid.HIDException: Connection timed out` on a
+`dev.write()` after a few hundred (sometimes a few dozen) frames. The device
+stays enumerated, `/dev/hidraw0` persists, and **reopening the handle always
+recovers it on the first attempt** (22/22 in the soak below).
+
+**Sustained run with a reconnect loop** — this is now the shipped behaviour of
+`scripts/stream.py` (hardened in T129 to reopen on the first write failure; see
+its docstring). Actual 10-minute run on the Pi:
+
+```
+$ python scripts/stream.py --seconds 600
+Stopped after 5907 frames in 600s (9.8 fps effective), 23 stalls, all reopened
+```
+
+So `stream.py` now **satisfies "run for at least 10 minutes"** on real hardware.
+A single open cannot (it dies after 30–600 frames), but a **reopen-on-failure loop
+sustains it indefinitely** — the failure always cleared on the **first** reopen
+(23/23), with no visible gap beyond the ~1 s reopen.
+
+**Policy consequence for Phase 2 (`HidSink`, T028):** because recovery succeeds on
+the *first* reopen, `HidSink` must reopen on the **first** write failure, not after
+a run of 3 — retrying a write against the stalled handle just wastes the stall
+window. The `panel_unresponsive` / power-cycle notice belongs to repeated **open**
+failure, not to a mid-stream stall (T028's task text now says this).
+
+**Unresolved:** *why* the controller stops accepting reports. It is not the
+link, not power (fixed), not the byte order, not the rate. Likely candidates are
+the panel's own firmware watchdog on the interrupt OUT pipe, or a hidraw/xhci
+quirk on this host. It needs no power-cycle — a handle reopen clears it — so it is
+benign in practice, but it is real and reproducible, and it is why a bare
+"open once and loop" script is insufficient on this hardware.
+
+**Brightness sweep (T129 requirement) — measured on hardware 2026-10-09:**
+`set_backlight` at 100 → 50 → 0 → 50 → 100 (each held 6 s against a solid white
+frame) was observed on the physical panel by the owner. All CRTLIG writes were
+accepted with no failure.
+
+**Result: `0` does NOT blank the panel.** The observed behaviour is that
+brightness *changes the backlight level* (it is visibly dimmed/different), but
+`0` does not turn the backlight off — the panel stays lit. This contradicts the
+"0 = backlight off" wording in FR-011 and in the CLI help.
+
+> Note: an earlier revision of this paragraph recorded that the panel "went fully
+> off at 0". That was a **misrecord** — the write was accepted, which was mistaken
+> for the visual effect. The owner's direct observation is authoritative
+> (constitution Principle I: nothing here is asserted beyond what was observed).
+
+Consequence for the spec (per T057's own rule): because `0` does not blank the
+panel, the brightness lower bound becomes **1** and **FR-011 is amended** away from
+"including turning the backlight off" — see the amendment recorded against FR-011 in
+`specs/001-status-display-platform/spec.md`. `0` is still accepted (it is a valid
+backlight level, not an error) but is no longer documented as "off".
+
+
 ### Init sequence (required before first frame)
 
 A second capture (fullpaneltest.pcapng) revealed two mandatory init commands

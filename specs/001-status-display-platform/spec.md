@@ -22,6 +22,10 @@
 
 - Q: How long should alert history be kept? → A: A configurable retention window of 1 hour (default), 2 hours, 4 hours, or "today" (since local midnight).
 
+### Session 2026-10-09
+
+- Q: On real hardware, does brightness `0` turn the panel's backlight off (FR-011 said "including turning the backlight off")? → A: **No.** The T129 hardware test on the Raspberry Pi 4B showed that `0` changes the backlight level but does **not** blank the panel; the display stays lit. Per T057's pre-agreed rule, the brightness lower bound becomes **1** and FR-011 is amended (see below). `0` is still accepted as a valid backlight level, but is no longer documented or described as "off".
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Run and manage the display from the command line (Priority: P1)
@@ -174,7 +178,7 @@ A developer (or the owner's agent) can add a new kind of content, such as a new 
 - **FR-008**: The runner MUST prevent more than one instance from driving the same panel.
 - **FR-009**: The runner MUST start and keep running when the panel is not attached, and MUST detect panel disconnection and reconnection automatically.
 - **FR-010**: The runner MUST initialize the panel correctly at the start of every session and MUST adjust image quality automatically so that each frame fits the panel's size limit.
-- **FR-011**: The system MUST allow setting panel brightness (0–100) at any time through the CLI, including turning the backlight off.
+- **FR-011**: The system MUST allow setting panel brightness (1–100) at any time through the CLI. ~~including turning the backlight off~~ *(amended 2026-10-09: hardware testing (T129) showed brightness `0` does not blank the panel — it only changes the backlight level — so the documented range starts at 1 and "backlight off" is not a supported state. `0` remains an accepted value for backwards compatibility but is not described as "off".)*
 - **FR-012**: The system MUST support a no-hardware mode that renders the composed display to image files instead of the panel, so that layouts, plugins, and tests can be exercised without a panel attached.
 - **FR-013**: The system MUST be able to run unattended on boot as a managed service on the Raspberry Pi, and the CLI MUST provide a way to install and remove that service configuration.
 
