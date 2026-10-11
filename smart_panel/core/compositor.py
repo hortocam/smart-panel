@@ -136,10 +136,13 @@ class Compositor:
     def set_state(self, instance: str, state: InstanceState) -> None:
         """Record the health of ``instance``; drives the error badge."""
         region = self._region_for(instance)
-        was_badged = self._states.get(instance) in _BADGE
+        # The cached canvas depends on which alert state the instance is in, not
+        # merely on whether it is alerting: ``degraded`` and ``stalled`` paint
+        # different badge colours. Compare the *badge colour*, so a badged->badged
+        # transition (degraded<->stalled) also invalidates the cache.
+        previous = self._states.get(instance)
         self._states[instance] = state
-        now_badged = state in _BADGE
-        if region is not None and was_badged != now_badged:
+        if region is not None and _badge_colour(previous) != _badge_colour(state):
             self._dirty.add(region.name)
 
     def dirty_regions(self) -> frozenset[str]:
@@ -220,9 +223,18 @@ def _to_rgba(image: PILImage.Image) -> PILImage.Image:
     return image.convert("RGBA")
 
 
+def _badge_colour(state: InstanceState | None) -> tuple[int, int, int, int] | None:
+    """The error-badge colour for ``state``, or ``None`` when it draws no badge."""
+    if state == InstanceState.STALLED:
+        return ERROR_BADGE_STALLED
+    if state == InstanceState.DEGRADED:
+        return ERROR_BADGE_DEGRADED
+    return None
+
+
 def _draw_badge(canvas: PILImage.Image, region: Region, state: InstanceState) -> None:
     """Stamp a small error badge in the region's top-right corner."""
-    colour = ERROR_BADGE_STALLED if state == InstanceState.STALLED else ERROR_BADGE_DEGRADED
+    colour = _badge_colour(state) or ERROR_BADGE_DEGRADED
     size = min(ERROR_BADGE_SIZE, region.w, region.h)
     left = region.x + region.w - size - ERROR_BADGE_MARGIN
     top = region.y + ERROR_BADGE_MARGIN

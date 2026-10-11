@@ -304,3 +304,36 @@ def test_a_badge_marks_its_region_dirty() -> None:
     comp.composite()
     comp.set_state("main", InstanceState.DEGRADED)
     assert comp.dirty_regions() == frozenset({"main"})
+
+
+def _badge_palette(canvas: PILImage.Image, region: Region) -> set[tuple[int, int, int, int]]:
+    """The distinct colours in the region's top-right corner (where the badge lands)."""
+    corner = canvas.crop((region.x + region.w - 24, region.y, region.x + region.w, region.y + 24))
+    return {_px(corner, x, y) for x in range(corner.width) for y in range(corner.height)}
+
+
+def test_degraded_to_stalled_transition_repaints_the_badge() -> None:
+    # degraded -> stalled is the normal worker progression. With a warm cache the
+    # recompose must repaint the badge red, not keep the stale amber pixel.
+    comp = _compositor()
+    comp.update("main", RenderImage(_solid((300, 220), GREEN)))
+    comp.set_state("main", InstanceState.DEGRADED)
+    assert ERROR_BADGE_DEGRADED in _badge_palette(comp.composite(), MAIN)
+
+    comp.set_state("main", InstanceState.STALLED)
+    palette = _badge_palette(comp.composite(), MAIN)
+    assert ERROR_BADGE_STALLED in palette
+    assert ERROR_BADGE_DEGRADED not in palette
+
+
+def test_stalled_to_degraded_transition_repaints_the_badge() -> None:
+    # The reverse badged->badged transition must also invalidate the cache.
+    comp = _compositor()
+    comp.update("main", RenderImage(_solid((300, 220), GREEN)))
+    comp.set_state("main", InstanceState.STALLED)
+    assert ERROR_BADGE_STALLED in _badge_palette(comp.composite(), MAIN)
+
+    comp.set_state("main", InstanceState.DEGRADED)
+    palette = _badge_palette(comp.composite(), MAIN)
+    assert ERROR_BADGE_DEGRADED in palette
+    assert ERROR_BADGE_STALLED not in palette
