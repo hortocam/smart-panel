@@ -117,7 +117,7 @@ class CliHost:
         return sorted(self.spool_dir().glob("*.json"))
 
     def start(self) -> subprocess.CompletedProcess[str]:
-        return self.cli("--json", "start", "--timeout", "15")
+        return self.cli("--json", "--timeout", "15", "start")
 
     def stop(self) -> None:
         self.cli("--json", "stop")

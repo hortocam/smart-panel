@@ -13,6 +13,10 @@ pipeline are exercised end to end on a host with no panel attached:
   no blank or partial frame in the ``FileSink`` frame sequence across the change;
 * ``restart`` returns content within 10 s and ``reload`` of a broken file keeps
   the last good configuration;
+* with the runner **down**, ``config set`` of an instance naming an unknown
+  plugin is refused with exit 2 (``invalid_input`` / ``plugins.<name>.plugin``)
+  and persists nothing — the same FR-006 guard the runner applies live — while a
+  registered built-in instance is still written through;
 * ``stop`` exits 0 and leaves no runner.
 """
 
@@ -131,6 +135,8 @@ class CliHost:
     def start(self, *, timeout: str = "15") -> subprocess.CompletedProcess[str]:
         return self.cli(
             "--json",
+            "--timeout",
+            timeout,
             "start",
             "--sink",
             "files",
@@ -138,8 +144,6 @@ class CliHost:
             str(self.frames),
             "--clock-file",
             str(self.clock),
-            "--timeout",
-            timeout,
             timeout=float(timeout) + 30,
         )
 
@@ -310,12 +314,70 @@ def test_reload_of_a_broken_file_keeps_the_last_good_config(host: CliHost) -> No
     assert value["data"]["value"] == "kept"
 
 
+# ------------------------------------------- runner-down config (T056 fallback)
+
+
+def test_a_runner_down_config_set_of_an_unknown_plugin_is_refused(host: CliHost) -> None:
+    # No runner is started (the ``host`` fixture never starts one): the CLI falls
+    # back to editing ``config.json`` itself (T056). The FR-006 guard must apply
+    # on that path too, or the verdict for one and the same command would depend
+    # on whether a runner happened to be running — contracts/cli.md puts "unknown
+    # plugin" at exit 2 for the CLI as a whole, with no runner-state carve-out.
+    before = (host.home / "config.json").read_bytes()
+
+    refused, proc = host.data("--json", "config", "set", "plugins.doom.plugin", "nosuchplugin")
+
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert refused["ok"] is False
+    assert refused["error"]["code"] == "invalid_input"
+    assert refused["error"]["setting"] == "plugins.doom.plugin"
+    # Nothing was persisted: the same guard the runner applies on the live path.
+    assert (host.home / "config.json").read_bytes() == before
+
+
+def test_a_runner_down_config_set_of_a_whole_dead_instance_is_refused(host: CliHost) -> None:
+    before = (host.home / "config.json").read_bytes()
+
+    refused, proc = host.data(
+        "--json",
+        "config",
+        "set",
+        "plugins.doom",
+        json.dumps({"plugin": "nosuchplugin", "enabled": True}),
+    )
+
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert refused["error"]["code"] == "invalid_input"
+    assert refused["error"]["setting"] == "plugins.doom.plugin"
+    assert (host.home / "config.json").read_bytes() == before
+
+
+def test_a_runner_down_config_set_of_a_discovered_plugin_is_applied(host: CliHost) -> None:
+    # The guard refuses an unknown plugin, not the runner-down write path itself:
+    # a registered built-in instance is still written through and durable.
+    applied, proc = host.data(
+        "--json",
+        "config",
+        "set",
+        "plugins.hello",
+        json.dumps({"plugin": "text", "enabled": True}),
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert applied["ok"] is True
+    assert applied["data"]["applied"] is True
+    document = json.loads((host.home / "config.json").read_text(encoding="utf-8"))
+    assert document["plugins"]["hello"]["plugin"] == "text"
+
+
 # --------------------------------------------------------------------- helpers
 
 
 def _start_args(host: CliHost) -> list[str]:
     return [
         "--json",
+        "--timeout",
+        "15",
         "start",
         "--sink",
         "files",
@@ -323,8 +385,6 @@ def _start_args(host: CliHost) -> list[str]:
         str(host.frames),
         "--clock-file",
         str(host.clock),
-        "--timeout",
-        "15",
     ]
 
 

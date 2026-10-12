@@ -11,6 +11,7 @@ runner: only it holds the resolved secret store, and values are never echoed.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -146,19 +147,17 @@ def cmd_config_schema(ctx: CliContext, tokens: list[str]) -> dict[str, Any]:
 
 
 def cmd_secret_set(ctx: CliContext, tokens: list[str]) -> dict[str, Any]:
-    """Store a secret (never echoed)."""
+    """Store a secret read from stdin (never echoed, never in argv).
+
+    ``contracts/cli.md`` names ``secret set NAME [--stdin]`` only: the value is
+    read from stdin, never taken as a positional, so it cannot leak into the
+    process's argv (which ``--stdin`` exists to avoid).
+    """
     positionals, opts = parse_options(tokens, bool_opts=("stdin",))
-    if not positionals:
-        raise UsageError("usage: smart-panel secret set NAME [--stdin]")
-    if len(positionals) > 2:
-        raise UsageError("usage: smart-panel secret set NAME [--stdin]")
-    name = positionals[0]
-    if opts.get("stdin"):
-        value = stdin_value()
-    elif len(positionals) == 2:
-        value = positionals[1]
-    else:
-        raise UsageError("secret set needs a VALUE or --stdin")
+    (name,) = require_args(positionals, 1, "smart-panel secret set NAME [--stdin]")
+    if not opts.get("stdin"):
+        raise UsageError("secret set needs --stdin (the value is never passed in argv)")
+    value = stdin_value()
     ctx.call("secret.set", {"name": name, "value": value})
     return {"name": name, "stored": True}
 
@@ -182,14 +181,22 @@ def cmd_secret_delete(ctx: CliContext, tokens: list[str]) -> dict[str, Any]:
 
 
 def _local_write(ctx: CliContext, path: str, value: Any, *, unset: bool) -> dict[str, Any]:
+    from smart_panel.core.control import protocol
     from smart_panel.core.layout import LayoutError
     from smart_panel.sdk.settings import SettingError
 
     config = ctx.local_config()
     try:
-        config.load()
+        data = config.load()
+        if not unset:
+            # FR-006 on the runner-down path: the same guard the runner applies
+            # before it persists a ``plugins`` write, applied to the same
+            # candidate subtree, before ``config.save`` touches the file.
+            _guard_local_plugins(ctx, data, path, value)
         data = config.unset(path) if unset else config.set(path, value)
         config.save(data)
+    except protocol.ProtocolError as exc:
+        raise CliError(exc.message, code=exc.code, setting=exc.setting) from exc
     except (SettingError, LayoutError) as exc:
         raise _invalid(exc) from exc
     except OSError as exc:
@@ -197,6 +204,33 @@ def _local_write(ctx: CliContext, path: str, value: Any, *, unset: bool) -> dict
     if unset:
         return {"path": path, "unset": True, "applied": True}
     return {"path": path, "value": config.get(path), "applied": True}
+
+
+def _guard_local_plugins(ctx: CliContext, data: Mapping[str, Any], path: str, value: Any) -> None:
+    """Refuse a runner-down ``config set`` that would persist a dead instance.
+
+    ``core.commands._config_set`` refuses a ``plugins`` write that would create
+    an instance for a plugin the loader never discovered (FR-006). When no runner
+    is running the CLI edits ``config.json`` itself, so it must apply the *same*
+    criterion (``loader.loaded()``) to the *same* candidate subtree, or the
+    verdict for one and the same command would depend on whether a runner
+    happened to be running — which ``contracts/cli.md`` (unknown plugin is exit 2
+    for the CLI as a whole, with no runner-state carve-out) does not allow.
+
+    Inspecting the resulting subtree means a dotted sub-key such as
+    ``plugins.<name>.plugin`` cannot conjure an instance either, and reusing the
+    core guard keeps the code, message and ``setting`` identical to the live
+    path. ``unset`` is not guarded: it can only remove, and removing a missing
+    ``plugin`` key is already refused structurally by ``validate_config``.
+    """
+    if path != "plugins" and not path.startswith("plugins."):
+        return
+    from smart_panel.core import commands as core_commands
+    from smart_panel.core.config import assign
+
+    stub = SimpleNamespace(loader=ctx.plugin_loader())
+    candidate = assign(data, path, value)
+    core_commands._guard_plugin_instances(stub, candidate.get("plugins"))
 
 
 def _local_config_schema(ctx: CliContext, plugin: str | None) -> dict[str, Any]:

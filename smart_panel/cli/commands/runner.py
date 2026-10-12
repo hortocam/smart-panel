@@ -48,14 +48,18 @@ def cmd_run(ctx: CliContext, tokens: list[str]) -> dict[str, Any]:
 
 
 def cmd_start(ctx: CliContext, tokens: list[str]) -> dict[str, Any]:
-    """Start the runner in the background and wait for the first frame."""
+    """Start the runner in the background and wait for the first frame.
+
+    The wait is bounded by the global ``--timeout`` (``max(ctx.timeout,
+    DEFAULT_START_TIMEOUT_S)``); there is no per-command ``--timeout`` — the
+    contract names ``--timeout`` as a global flag only.
+    """
     positionals, opts = parse_options(
         tokens,
-        value_opts={**_START_OPTS, "sink": _validate_sink, "timeout": float},
+        value_opts={**_START_OPTS, "sink": _validate_sink},
     )
     no_args(positionals, "smart-panel start [--sink hid|files|null] [--files-dir DIR]")
-    timeout = float(opts.get("timeout", max(ctx.timeout, DEFAULT_START_TIMEOUT_S)))
-    return _start_detached(ctx, opts, timeout)
+    return _start_detached(ctx, opts, max(ctx.timeout, DEFAULT_START_TIMEOUT_S))
 
 
 def cmd_stop(ctx: CliContext, tokens: list[str]) -> dict[str, Any]:
@@ -73,14 +77,13 @@ def cmd_stop(ctx: CliContext, tokens: list[str]) -> dict[str, Any]:
 def cmd_restart(ctx: CliContext, tokens: list[str]) -> dict[str, Any]:
     """Stop then start the runner, waiting for content again."""
     positionals, opts = parse_options(
-        tokens, value_opts={**_START_OPTS, "sink": _validate_sink, "timeout": float}
+        tokens, value_opts={**_START_OPTS, "sink": _validate_sink}
     )
-    no_args(positionals, "smart-panel restart [--timeout S]")
+    no_args(positionals, "smart-panel restart")
     if _is_running(ctx):
         ctx.call("runner.stop")
         _wait_for_stop(ctx, max(ctx.timeout, 10.0))
-    timeout = float(opts.get("timeout", max(ctx.timeout, DEFAULT_START_TIMEOUT_S)))
-    return _start_detached(ctx, opts, timeout)
+    return _start_detached(ctx, opts, max(ctx.timeout, DEFAULT_START_TIMEOUT_S))
 
 
 def cmd_reload(ctx: CliContext, tokens: list[str]) -> dict[str, Any]:
