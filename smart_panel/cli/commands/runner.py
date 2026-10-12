@@ -25,6 +25,7 @@ from smart_panel.cli.commands import (
     parse_options,
 )
 from smart_panel.cli.output import CliError, ConflictError, UsageError
+from smart_panel.core import paths
 
 DEFAULT_START_TIMEOUT_S = 10.0
 _SINK_CHOICES = ("hid", "files", "null")
@@ -176,6 +177,7 @@ def _is_running(ctx: CliContext) -> bool:
 
 def _wait_for_first_frame(ctx: CliContext, timeout: float) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
+    last: dict[str, Any] | None = None
     while time.monotonic() < deadline:
         try:
             data = ctx.call("runner.status")
@@ -184,22 +186,75 @@ def _wait_for_first_frame(ctx: CliContext, timeout: float) -> dict[str, Any]:
                 time.sleep(0.05)
                 continue
             raise
+        last = data
         frames = data.get("frames") or {}
         if data.get("state") == "running" and int(frames.get("sent") or 0) > 0:
             return data
         time.sleep(0.05)
     raise CliError(
-        f"the runner did not send a first frame within {timeout:g} s", code="timeout"
+        f"the runner did not send a first frame within {timeout:g} s{_start_diagnostic(last)}",
+        code="timeout",
+    )
+
+
+def _start_diagnostic(status: dict[str, Any] | None) -> str:
+    """Detail for a start/restart timeout so a stalled start is diagnosable.
+
+    A start can time out either because the new runner never answered the
+    control socket (it exited) or because it answered but stayed short of a
+    first frame (still ``starting``, or up with ``sent`` at zero). Those need
+    different fixes, and the bare timeout message cannot tell them apart, so
+    report the last observed ``status``.
+    """
+    if status is None:
+        return " (the runner never answered the control socket)"
+    frames = status.get("frames") or {}
+    return (
+        f" (state={status.get('state')!r}, sent={frames.get('sent')}, "
+        f"plugins={status.get('plugins')}, errors={status.get('errors')})"
     )
 
 
 def _wait_for_stop(ctx: CliContext, timeout: float) -> None:
+    """Wait until the runner stops answering *and* has fully torn down.
+
+    ``runner.status`` stops answering as soon as the control server is closed,
+    but ``core/runner.py::_teardown`` closes the control server *before* it
+    joins its loops and releases the single-instance lock and pid file. Spawning
+    the replacement inside that window (which ``restart`` does) can hand the new
+    runner a lock the old one has not released, so it exits without ever sending
+    a frame. Waiting for the pid file to clear the process makes "stopped" mean
+    the process really is gone.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if not _is_running(ctx):
+        if not _is_running(ctx) and not _runner_process_alive():
             return
         time.sleep(0.05)
     raise CliError("the runner did not stop within the timeout", code="timeout")
+
+
+def _runner_process_alive() -> bool:
+    """Whether ``<runtime>/runner.pid`` still names a live process."""
+    try:
+        raw = paths.runner_pid().read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    if not raw:
+        return False
+    try:
+        pid = int(raw)
+    except ValueError:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:  # an out-of-range pid or another kill failure: not our runner
+        return False
+    return True
 
 
 HANDLERS: dict[tuple[str, ...], Any] = {
