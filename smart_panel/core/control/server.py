@@ -216,6 +216,11 @@ class ControlServer:
                 continue
             result = self._dispatch_request(request)
             if isinstance(result, Iterator):
+                # A streaming command (``logs.tail --follow``) returns a lazy
+                # iterator, which ``_dispatch_request`` has already handed back:
+                # the serialized worker is free by now. The events are pulled
+                # here, on the connection's own thread, so one client following
+                # the log does not delay any other command.
                 for event in result:
                     self._write(conn, event)
                 return

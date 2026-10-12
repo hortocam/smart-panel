@@ -25,10 +25,12 @@ from pathlib import Path
 
 import pytest
 
+from smart_panel.core.commands import make_dispatch
 from smart_panel.core.control import access, protocol
 from smart_panel.core.control.access import Policy
 from smart_panel.core.control.client import ControlClient, ControlClientError
 from smart_panel.core.control.server import ControlServer
+from smart_panel.core.logging import RunnerLog
 
 DOCUMENTED_ERROR_CODES = frozenset(
     {
@@ -365,6 +367,47 @@ class TestControlServer:
         finally:
             server.stop()
 
+    def test_a_following_log_tail_leaves_the_dispatch_worker_free(
+        self, runtime: Path, tmp_path: Path
+    ) -> None:
+        """``logs.tail --follow`` must not occupy the serialized dispatch worker.
+
+        The single worker exists so two commands get a defined order, not so one
+        client's open stream can starve every other command. ``_logs_tail``
+        returns a lazy generator and ``_serve_connection`` pulls it on the
+        connection's own thread, so the worker is released as soon as the
+        generator object is handed back. This pins that: while the real
+        ``logs.tail --follow`` stream is open, an independent command still
+        answers well inside its normal client timeout.
+        """
+        log = RunnerLog(path=tmp_path / "runner.log", ring_size=4)
+        log.info("filler", n=0)
+        runner = _StreamingRunner(log)
+        server = _serve(make_dispatch(runner), runtime)
+        follower = ControlClient(timeout=5)
+        try:
+            follower.connect()
+            stream = follower.stream("logs.tail", {"follow": True, "lines": 1})
+            first = next(stream)
+            assert first["event"] == "log" and first["log_event"] == "filler"
+
+            # The follow is open; the server is still pulling it on the
+            # connection thread. A second command must not wait behind it.
+            with ControlClient(timeout=2) as other:
+                started = time.monotonic()
+                response = other.call("runner.status")
+                elapsed = time.monotonic() - started
+
+            assert response.ok is True
+            assert response.data == {"running": True}
+            # A worker held for the life of the stream would have raised a
+            # socket timeout or eaten the whole 2 s; this answers in milliseconds.
+            assert elapsed < 1.0, f"a command waited {elapsed:.2f}s behind the follow"
+        finally:
+            runner.stopping = True
+            follower.close()
+            server.stop()
+
     def test_the_client_handshakes_and_calls(self, runtime: Path) -> None:
         server = _serve(_echo_dispatch, runtime)
         try:
@@ -394,6 +437,21 @@ class TestControlServer:
 
 def _echo_dispatch(request: protocol.Request) -> protocol.Response:
     return protocol.Response.success(request.id, {"echo": request.cmd})
+
+
+class _StreamingRunner:
+    """The slice of ``Runner`` that ``logs.tail`` and ``runner.status`` touch.
+
+    ``stopping`` is flipped by the test to end the follow generator, exactly as
+    ``Runner.stopping`` does (``core/runner.py``).
+    """
+
+    def __init__(self, log: RunnerLog) -> None:
+        self.log = log
+        self.stopping = False
+
+    def status(self) -> dict[str, object]:
+        return {"running": True}
 
 
 def test_access_module_is_used_by_the_server_contract() -> None:
