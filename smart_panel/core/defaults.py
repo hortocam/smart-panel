@@ -22,3 +22,27 @@ def default_layout() -> Layout:
         ],
         overlays=[Overlay(region="main", instance="alerts")],
     )
+
+
+def default_layout_for(instances: object) -> dict[str, list[dict[str, object]]]:
+    """The default layout filtered to regions/overlays whose instance exists.
+
+    Until every built-in exists, the default config may only reference instances
+    that are actually registered, or it would not validate (T061). ``instances``
+    is the set/iterable/mapping of configured instance names.
+    """
+    present = set(instances)  # type: ignore[arg-type]
+    layout = default_layout()
+    return {
+        "regions": [
+            {"name": r.name, "x": r.x, "y": r.y, "w": r.w, "h": r.h, "instance": r.instance}
+            for r in layout.regions
+            if r.instance in present
+        ],
+        "overlays": [
+            {"region": o.region, "instance": o.instance, "z": o.z}
+            for o in layout.overlays
+            if o.instance in present
+        ],
+    }
+
