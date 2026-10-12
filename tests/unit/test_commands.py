@@ -11,11 +11,20 @@ ring is a fixed-size ``deque``, so its length stops growing at capacity; a
 follow loop that indexes new events by the *length* of the ring silently drops
 every event from then on. The stream tracks the log's monotonic sequence
 number instead.
+
+F5 — ``plugin.instance.add`` used to accept a ``--plugin`` name the loader never
+discovered: the instance was persisted straight through ``set_config``, and on
+the next apply ``Runner._start_instance`` found no ``plugin_class`` and logged
+``instance_skipped`` forever — a "dead" instance that ``plugin instance list``
+still reported. FR-006 requires the change to be validated before it is applied,
+so the handler rejects the unknown name (``invalid_input``, CLI exit 2) naming
+the setting and persists nothing.
 """
 
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 
 import pytest
 
@@ -24,7 +33,9 @@ from smart_panel.core.commands import _logs_tail, make_dispatch
 from smart_panel.core.config import validate_config
 from smart_panel.core.control import protocol
 from smart_panel.core.logging import RunnerLog
+from smart_panel.core.plugins import PluginLoader
 from smart_panel.core.secrets import SecretError
+from smart_panel.sdk.plugin import Manifest, Plugin
 
 
 class _NullLog:
@@ -51,7 +62,7 @@ class _StubSecrets:
 class _StubRunner:
     """A duck-typed runner with real config validation and no threads or socket."""
 
-    def __init__(self, log: object | None = None) -> None:
+    def __init__(self, log: object | None = None, loader: object | None = None) -> None:
         self._config = validate_config(
             {
                 "display": {"fps": 15, "brightness": 50, "sink": "null", "min_text_px": 24},
@@ -60,6 +71,7 @@ class _StubRunner:
             }
         )
         self.log = log if log is not None else _NullLog()
+        self.loader = loader
         self.stopping = False
         self.secrets = _StubSecrets()
 
@@ -124,6 +136,61 @@ def test_an_invalid_secret_name_is_invalid_input() -> None:
     with pytest.raises(protocol.ProtocolError) as excinfo:
         dispatch(protocol.Request("secret.set", {"name": "bad name", "value": "x"}))
     assert excinfo.value.code == "invalid_input"
+
+
+# ------------------------------------------------------------------ F5: add
+
+
+class _TinyRegionPlugin(Plugin):
+    """A loader-visible stand-in, so the accepted path has one known plugin."""
+
+    manifest = Manifest(name="text", version="0.1.0", capabilities=frozenset({"region"}))
+
+
+def test_adding_an_instance_for_an_unknown_plugin_is_invalid_input(tmp_path: Path) -> None:
+    loader = PluginLoader(builtins={}, home=tmp_path / "plugins")
+    dispatch = make_dispatch(_StubRunner(loader=loader))
+
+    with pytest.raises(protocol.ProtocolError) as excinfo:
+        dispatch(
+            protocol.Request(
+                "plugin.instance.add", {"name": "dead", "plugin": "no-such-plugin"}
+            )
+        )
+
+    assert excinfo.value.code == "invalid_input"
+    assert "no-such-plugin" in excinfo.value.message
+    # FR-006: the message identifies the setting.
+    assert excinfo.value.setting == "plugins.dead.plugin"
+
+
+def test_adding_an_instance_for_an_unknown_plugin_persists_nothing(tmp_path: Path) -> None:
+    loader = PluginLoader(builtins={}, home=tmp_path / "plugins")
+    runner = _StubRunner(loader=loader)
+    dispatch = make_dispatch(runner)
+
+    with pytest.raises(protocol.ProtocolError):
+        dispatch(
+            protocol.Request(
+                "plugin.instance.add", {"name": "dead", "plugin": "no-such-plugin"}
+            )
+        )
+
+    # No dead instance: the config was never written through set_config.
+    assert runner.config_data["plugins"] == {}
+
+
+def test_adding_an_instance_for_a_discovered_plugin_is_accepted(tmp_path: Path) -> None:
+    loader = PluginLoader(builtins={"text": _TinyRegionPlugin}, home=tmp_path / "plugins")
+    runner = _StubRunner(loader=loader)
+    dispatch = make_dispatch(runner)
+
+    response = dispatch(
+        protocol.Request("plugin.instance.add", {"name": "hello", "plugin": "text"})
+    )
+
+    assert response.ok
+    assert runner.config_data["plugins"]["hello"]["plugin"] == "text"
 
 
 # --------------------------------------------------------------- F4: logs.tail
