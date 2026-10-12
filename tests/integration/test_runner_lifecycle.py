@@ -247,8 +247,7 @@ def test_a_config_set_appears_in_preview_without_a_partial_frame(host: CliHost) 
     _require_started(host)
 
     before = host.base / "before.png"
-    _preview(host, before)
-    reference = read_latest(before)
+    reference = _preview_until_content(host, before)
     assert reference.size == CANVAS
     assert is_non_blank(reference)
 
@@ -281,7 +280,13 @@ def test_a_config_set_appears_in_preview_without_a_partial_frame(host: CliHost) 
 def test_restart_returns_content(host: CliHost) -> None:
     _require_started(host)
 
-    restarted, proc = host.data("--json", "restart", "--clock-file", str(host.clock), timeout=60)
+    # A generous global ``--timeout``: the start wait is ``max(ctx.timeout, 10)``
+    # and a loaded macOS CI runner can take well over 10 s to bring a fresh
+    # runner up to its first frame. The wait stays bounded, so a runner that
+    # never starts still fails.
+    restarted, proc = host.data(
+        "--json", "--timeout", "20", "restart", "--clock-file", str(host.clock), timeout=65
+    )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert restarted["data"]["state"] == "running"
     assert restarted["data"]["frames"]["sent"] > 0
@@ -399,6 +404,48 @@ def _preview(host: CliHost, target: Path) -> None:
     data, proc = host.data("--json", "preview", "--output", str(target))
     assert proc.returncode == 0, proc.stderr
     assert data["data"]["output"] == str(target)
+
+
+def _preview_until_content(
+    host: CliHost, target: Path, *, timeout: float = 10.0
+) -> PILImage.Image:
+    """Preview until the composed canvas carries region content, within a deadline.
+
+    ``start`` returns as soon as the runner has *sent* a frame
+    (``cli/commands/runner.py::_wait_for_first_frame`` waits on
+    ``frames.sent > 0``), and the runner's *first* composed canvas is the bare
+    background: ``core/runner.py::_compose_once`` submits a frame to each region
+    worker (a thread) and reads ``worker.last_image`` in the same pass, so on
+    the first pass the image is not there yet and the compositor publishes the
+    empty background. The region content lands one or more passes later. On a
+    fast host that is inside the time the next CLI round-trip takes; on a loaded
+    macOS CI runner it is not, and the immediate ``preview`` catches the blank
+    canvas. That is a startup race, not a rendering defect: a *blank* canvas
+    (no bright pixel) means the instance is still ``starting`` — a
+    ``degraded``/``stalled`` instance has the error badge drawn over it, whose
+    white marker pixels are bright (see ``core/compositor.py``).
+
+    The wait is bounded, so a worker that genuinely never renders still fails
+    here (the deadline expires and the error carries the ``status`` snapshot of
+    plugin states and errors); it cannot mask a real defect.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        _preview(host, target)
+        image = read_latest(target)
+        if image.size == CANVAS and is_non_blank(image):
+            return image
+        if time.monotonic() >= deadline:
+            status, _ = host.data("--json", "status")
+            data = status.get("data", {}) if isinstance(status, dict) else {}
+            raise AssertionError(
+                "the composed canvas stayed blank for "
+                f"{timeout:g}s after start "
+                f"(max_luminance={image.convert('L').getextrema()[1]}, "
+                f"size={image.size}, plugins={data.get('plugins')}, "
+                f"errors={data.get('errors')})"
+            )
+        time.sleep(0.1)
 
 
 def sample_frames(host: CliHost, *, count: int, spacing: float = 0.05) -> list[tuple[int, int]]:
