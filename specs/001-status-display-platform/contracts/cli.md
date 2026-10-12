@@ -13,7 +13,7 @@ smart-panel [--home DIR] [--json] [--quiet] [--timeout SECONDS] <command> [args]
 | `--home DIR` | Override `SMART_PANEL_HOME` |
 | `--json` | Machine-readable output (see envelope). Also enabled by `SMART_PANEL_JSON=1` |
 | `--quiet` | Suppress human-readable output; exit code only |
-| `--timeout S` | Control-channel timeout, default 5 |
+| `--timeout S` | Control-channel timeout for the connect, handshake and one-shot replies, default 5. Not a liveness limit on an open stream (see "Streaming commands") |
 
 ### JSON envelope (FR-005)
 
@@ -48,6 +48,20 @@ Push commands that were spooled return `{"ok": true, "data": {"saved_for_later":
 
 `error.code` strings match the names above plus `not_found` (exit 2), `spool_full` (exit 1), `timeout` (exit 1), and `protocol_mismatch` (exit 1).
 
+### Streaming commands
+
+`logs --follow` is the only streaming command. The runner answers `logs.tail {follow: true}` with a sequence of `{"event": "log", ...}` lines and streams them until the client closes ([control-protocol.md](control-protocol.md)); the CLI writes one line per event and adds no envelope.
+
+Its exit codes are pinned:
+
+| Outcome | Exit |
+|---|---|
+| The runner closes the stream (EOF) — a normal end of `--follow` | 0 |
+| No runner is running (connect fails with `ENOENT`/`ECONNREFUSED`) | 3 `runner_not_running` |
+| The runtime dir or socket belongs to another account | 5 `not_permitted` |
+
+`--timeout` bounds the connect and hello handshake only. While the stream is open the client stays **parked** through an idle gap longer than `--timeout` — an idle follow does **not** exit on the timeout; it ends when the runner closes the stream (exit 0) or the user interrupts it (Ctrl-C, exit 130).
+
 ## Core commands
 
 ### Runner lifecycle (FR-002, FR-003, FR-008, FR-013)
@@ -61,7 +75,7 @@ Push commands that were spooled return `{"ok": true, "data": {"saved_for_later":
 | `reload` | Re-read `config.json` from disk and apply it (validated; last good config kept on error) |
 | `status` | Runner state, uptime, panel state, measured fps, target fps and governor level, active layout, every plugin instance's health, recent errors, spool depth |
 | `service install \| uninstall \| status` | systemd user unit (Linux) or launchd agent (macOS) |
-| `logs [--follow] [--lines N] [--level L]` | Tail the log via the runner |
+| `logs [--follow] [--lines N] [--level L]` | Tail the log via the runner (streaming exit codes: see "Streaming commands") |
 
 `status --json` data (stable fields):
 

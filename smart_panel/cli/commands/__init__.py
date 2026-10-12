@@ -199,10 +199,19 @@ class CliContext:
             raise
 
     def stream(self, cmd: str, args: Mapping[str, Any] | None = None) -> Any:
-        """Open a streaming control command and yield each event object."""
+        """Open a streaming control command and yield each event object.
+
+        Client-side failures raise the same :class:`CliError` codes as
+        :meth:`call` (``runner_not_running`` for a follow with no runner,
+        ``not_permitted`` for a rejected owner), so a streaming command exits 3/5
+        exactly like its one-shot sibling.
+        """
         control = ControlClient(timeout=self.timeout)
         try:
-            yield from control.stream(cmd, dict(args or {}))
+            try:
+                yield from control.stream(cmd, dict(args or {}))
+            except client.ControlClientError as exc:
+                raise CliError(exc.message, code=exc.code) from exc
         finally:
             control.close()
 
