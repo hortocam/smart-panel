@@ -55,6 +55,7 @@ from smart_panel.core.control import access, protocol
 from smart_panel.core.control.server import ControlServer
 from smart_panel.core.control.spool import SpoolIngest
 from smart_panel.core.encoder import Encoder
+from smart_panel.core.fonts import FontRegistry
 from smart_panel.core.governor import Governor
 from smart_panel.core.layout import Layout, Overlay, Region
 from smart_panel.core.logging import RunnerLog
@@ -187,6 +188,7 @@ class Runner:
         self._governor: Governor | None = None
         self._store: Store | None = None
         self._bus: Bus | None = None
+        self._fonts: FontRegistry | None = None
         self._secrets: Secrets | None = None
         self._control: ControlServer | None = None
         self._ingest: SpoolIngest | None = None
@@ -512,6 +514,10 @@ class Runner:
         self._secrets = Secrets(redactor=self._log.redactor)
         self._store = Store(clock=self._clock)
         self._bus = Bus(clock=self._clock)
+        # fonts is contract (``contracts/plugin-sdk.md``): ``fonts.get(name, size)``
+        # with the configured fallback chain. Built here so a missing font still
+        # warns through the runner's log (T034).
+        self._fonts = FontRegistry(notify=self._font_notify)
         if self._loader is None:
             self._loader = PluginLoader()
 
@@ -581,6 +587,18 @@ class Runner:
             start_quality=int(quality.get("start", 70)),
             min_quality=int(quality.get("min", 30)),
         )
+
+    def _font_notify(self, event: Any) -> None:
+        """Forward a :class:`FontRegistry` warning to the structured log (T034).
+
+        The registry emits ``{"event": "font_missing", "font": ..., "fallback":
+        ...}`` when a requested font is not found; the runner logs it under the
+        registry's own event name so ``status``/``logs`` show a missing font
+        instead of silently drawing the fallback.
+        """
+        fields = dict(event) if isinstance(event, Mapping) else {"detail": event}
+        name = str(fields.pop("event", "font_missing"))
+        self._log.warning(name, **fields)
 
     def _apply_brightness(self, value: Any) -> None:
         if self._sink is None:
@@ -676,6 +694,7 @@ class Runner:
             now=self._clock.monotonic(),
             wall=self._clock.time(),
             frame_index=self._frame_index,
+            fonts=self._fonts,
             bus=self._bus,
             min_text_px=int(self._config_data.get("display", {}).get("min_text_px", 24)),
         )
