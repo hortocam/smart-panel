@@ -356,19 +356,12 @@ def _plugin_instance_list(runner: Any, _args: dict[str, Any]) -> dict[str, Any]:
 def _plugin_instance_add(runner: Any, args: dict[str, Any]) -> dict[str, Any]:
     name = _require(args, "name")
     plugin = _require(args, "plugin")
-    loader = runner.loader
-    if loader is not None and str(plugin) not in loader.loaded():
-        # FR-006: validate before applying.  An instance whose ``plugin`` the
-        # loader never discovered would persist but never start — on the next
-        # apply ``Runner._start_instance`` finds no ``plugin_class`` and logs
-        # ``instance_skipped`` forever, a "dead" instance that
-        # ``plugin instance list`` still reports.  Reject it (exit 2) instead,
-        # naming the offending setting.
-        raise protocol.ProtocolError(
-            "invalid_input",
-            f"plugin {plugin!r} is not installed or available",
-            setting=f"plugins.{name}.plugin",
-        )
+    # FR-006: validate before applying.  The criterion is the shared guard's, so
+    # ``plugin.instance.add`` and ``config set`` on a ``plugins`` path agree on
+    # the code, message and setting.  It runs before the settings are coerced,
+    # so a name the loader never discovered is reported as ``invalid_input``
+    # (exit 2) whatever else the caller sent.
+    _guard_plugin_instances(runner, {name: {"plugin": plugin}})
     instance = {"plugin": plugin, "enabled": True, "settings": dict(args.get("settings", {}) or {})}
     return runner.set_config(f"plugins.{name}", instance)
 
@@ -594,11 +587,13 @@ def _guard_plugin_instances(runner: Any, instances: Any) -> None:
     The criterion is exactly the one :meth:`Runner._start_instance` applies — a
     plugin absent from ``loader.loaded()`` — so no CLI config write can persist an
     instance the runner would only ever log ``instance_skipped`` for (FR-006).
-    This is the guard ``plugin.instance.add`` applies inline after F5; ``config
-    set`` routes its plugins edits through here so both paths agree.  With no
-    loader there is nothing to check against, so the write is allowed, matching
-    ``plugin.instance.add``; a value that fails structural validation (a missing
-    or non-string ``plugin``) is left to ``validate_config``.
+    Both entry points that can persist an instance route through here:
+    ``plugin.instance.add`` (a single instance it is about to create) and
+    ``config set`` on a ``plugins`` path (the whole resulting subtree), so the
+    two agree.  With no loader there is nothing to check against, so the write
+    is allowed, matching ``plugin.instance.add``; a value that fails structural
+    validation (a missing or non-string ``plugin``) is left to
+    ``validate_config``.
     """
     loader = runner.loader
     if loader is None or not isinstance(instances, Mapping):
