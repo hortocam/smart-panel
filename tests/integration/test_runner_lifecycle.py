@@ -7,12 +7,14 @@ pipeline are exercised end to end on a host with no panel attached:
 
 * ``start`` brings a configured ``text`` instance up and ``status`` reports the
   stable fields ``contracts/cli.md`` names;
+* an immediate ``preview`` (no wait) after ``start`` is non-blank: the runner's
+  first *sent* frame is a content frame, not the bare background;
 * a second ``start`` exits 6;
 * an invalid ``config set`` exits 2, names ``display.fps`` and changes nothing;
 * a ``config set`` of the text instance shows up in ``preview`` within 5 s, with
   no blank or partial frame in the ``FileSink`` frame sequence across the change;
-* ``restart`` returns content within 10 s and ``reload`` of a broken file keeps
-  the last good configuration;
+* ``restart`` returns content within 10 s, with an immediate non-blank
+  ``preview``, and ``reload`` of a broken file keeps the last good configuration;
 * with the runner **down**, ``config set`` of an instance naming an unknown
   plugin is refused with exit 2 (``invalid_input`` / ``plugins.<name>.plugin``)
   and persists nothing — the same FR-006 guard the runner applies live — while a
@@ -29,7 +31,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -163,15 +165,6 @@ def host(tmp_path: Path) -> Iterator[CliHost]:
         shutil.rmtree(base, ignore_errors=True)
 
 
-def wait_for(predicate: Callable[[], bool], timeout: float = 5.0, step: float = 0.05) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(step)
-    return predicate()
-
-
 def read_latest(path: Path) -> PILImage.Image:
     with PILImage.open(path) as image:
         image.load()
@@ -247,7 +240,9 @@ def test_a_config_set_appears_in_preview_without_a_partial_frame(host: CliHost) 
     _require_started(host)
 
     before = host.base / "before.png"
-    reference = _preview_until_content(host, before)
+    # No wait, no retry: `start` returns only once a *content* frame has been
+    # sent, so the very next `preview` renders region content (T051).
+    reference = _preview_now(host, before)
     assert reference.size == CANVAS
     assert is_non_blank(reference)
 
@@ -291,11 +286,11 @@ def test_restart_returns_content(host: CliHost) -> None:
     assert restarted["data"]["state"] == "running"
     assert restarted["data"]["frames"]["sent"] > 0
 
-    def has_content() -> bool:
-        status, _ = host.data("--json", "status")
-        return status.get("ok") is True and status["data"]["frames"]["sent"] > 0
-
-    assert wait_for(has_content, timeout=10.0)
+    # ``restart`` waits for the first frame, and the first frame the runner now
+    # sends carries region content, so an immediate preview (no wait) is
+    # non-blank — the same guarantee ``start`` gives (T051).
+    image = _preview_now(host, host.base / "restarted.png")
+    assert image.size == CANVAS
 
 
 def test_reload_of_a_broken_file_keeps_the_last_good_config(host: CliHost) -> None:
@@ -406,46 +401,30 @@ def _preview(host: CliHost, target: Path) -> None:
     assert data["data"]["output"] == str(target)
 
 
-def _preview_until_content(
-    host: CliHost, target: Path, *, timeout: float = 10.0
-) -> PILImage.Image:
-    """Preview until the composed canvas carries region content, within a deadline.
+def _preview_now(host: CliHost, target: Path) -> PILImage.Image:
+    """Preview once, with no wait, and require the canvas to carry content.
 
-    ``start`` returns as soon as the runner has *sent* a frame
-    (``cli/commands/runner.py::_wait_for_first_frame`` waits on
-    ``frames.sent > 0``), and the runner's *first* composed canvas is the bare
-    background: ``core/runner.py::_compose_once`` submits a frame to each region
-    worker (a thread) and reads ``worker.last_image`` in the same pass, so on
-    the first pass the image is not there yet and the compositor publishes the
-    empty background. The region content lands one or more passes later. On a
-    fast host that is inside the time the next CLI round-trip takes; on a loaded
-    macOS CI runner it is not, and the immediate ``preview`` catches the blank
-    canvas. That is a startup race, not a rendering defect: a *blank* canvas
-    (no bright pixel) means the instance is still ``starting`` — a
-    ``degraded``/``stalled`` instance has the error badge drawn over it, whose
-    white marker pixels are bright (see ``core/compositor.py``).
-
-    The wait is bounded, so a worker that genuinely never renders still fails
-    here (the deadline expires and the error carries the ``status`` snapshot of
-    plugin states and errors); it cannot mask a real defect.
+    ``start``/``restart`` return only after the runner has sent a *content*
+    frame: ``core/runner.py::_release_first_frame`` holds the first frame back
+    until a compose pass carries a region layer (or a ``degraded``/``stalled``
+    instance's error badge) or until every instance has delivered its first
+    render. The blank first frame was a startup race — ``_compose_once`` submits
+    to a worker *thread* and reads ``worker.last_image`` in the same pass — and
+    used to make an immediate ``preview`` flaky on a loaded macOS CI runner
+    (observed: a blank 1920x462 canvas, ``max_luminance=0``). A blank canvas
+    here now means a real defect, so this helper does not retry: it fails on the
+    first look. (A genuinely empty layout — every instance ``Inactive``, or no
+    instances at all — does start on the bare background; that is not a startup
+    race, and ``status.errors`` carries ``first_frame_without_content``.)
     """
-    deadline = time.monotonic() + timeout
-    while True:
-        _preview(host, target)
-        image = read_latest(target)
-        if image.size == CANVAS and is_non_blank(image):
-            return image
-        if time.monotonic() >= deadline:
-            status, _ = host.data("--json", "status")
-            data = status.get("data", {}) if isinstance(status, dict) else {}
-            raise AssertionError(
-                "the composed canvas stayed blank for "
-                f"{timeout:g}s after start "
-                f"(max_luminance={image.convert('L').getextrema()[1]}, "
-                f"size={image.size}, plugins={data.get('plugins')}, "
-                f"errors={data.get('errors')})"
-            )
-        time.sleep(0.1)
+    _preview(host, target)
+    image = read_latest(target)
+    assert image.size == CANVAS
+    assert is_non_blank(image), (
+        "the composed canvas is blank immediately after start "
+        f"(max_luminance={image.convert('L').getextrema()[1]}, size={image.size})"
+    )
+    return image
 
 
 def sample_frames(host: CliHost, *, count: int, spacing: float = 0.05) -> list[tuple[int, int]]:
