@@ -6,9 +6,9 @@ sized to whatever region the layout assigns it. It imports only
 ``smart_panel.sdk`` and ``PIL`` (FR-043); a contract test enforces that.
 
 Settings and the ``set`` verb are pinned by ``contracts/builtin-plugins.md``:
-``text`` (<= 280 chars), ``fg``/``bg`` (colour), ``font`` (bundled name or TTF
-path), ``size`` (>= ``frame.min_text_px``), ``align`` (``left|center|right``),
-and ``set --text T`` marked ``spoolable``.
+``text`` (<= 280 chars; an empty string is a valid blank frame), ``fg``/``bg``
+(colour), ``font`` (bundled name or TTF path), ``size`` (>= ``frame.min_text_px``),
+``align`` (``left|center|right``), and ``set --text T`` marked ``spoolable``.
 """
 
 from __future__ import annotations
@@ -188,6 +188,11 @@ class TextPlugin(Plugin):
         text = args.get("text")
         if not isinstance(text, str):
             raise CommandError("invalid_input", "set needs a 'text' string")
+        # An empty string is a valid value, not an input error: it draws a
+        # background-only blank frame. This is deliberate and pinned by
+        # ``contracts/builtin-plugins.md`` (``text``) — ``set --text ""`` is the
+        # only way to blank a region (the plugin has no ``clear`` verb), so it is
+        # neither refused nor clamped. Do not add empty-text validation here.
         if len(text) > MAX_TEXT_CHARS:
             raise CommandError(
                 "invalid_input", f"text must be at most {MAX_TEXT_CHARS} characters"
