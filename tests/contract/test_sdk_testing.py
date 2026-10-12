@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from PIL import Image as PILImage
+from PIL import ImageDraw
 
 from smart_panel.sdk.plugin import (
     Command,
@@ -103,6 +104,38 @@ def test_harness_returns_none_for_unchanged_result() -> None:
     harness = PluginHarness(Static, {}, size=(10, 10))
     assert harness.render() is None
     harness.stop()
+
+
+def test_harness_resolves_fonts_at_the_requested_size() -> None:
+    """The harness draws text like the runner, not at the ~8 px default font.
+
+    ``text`` settings ``font``/``size`` must mean the same thing headless as in
+    production, so the harness resolves through the runner's ``FontRegistry``
+    (T034) instead of ``ImageFont.load_default()``, which ignores both the name
+    and the size (a plugin asking for 120 px rendered ~8 px here while the runner
+    drew 120 px, so a harness test could not catch a font/size defect).
+    """
+
+    class TextSample(Plugin):
+        manifest = Manifest(name="harness-text", summary="draws text via frame.fonts")
+
+        def render(self, frame: object) -> object:
+            size = frame.size  # type: ignore[attr-defined]
+            image = PILImage.new("RGBA", size, (0, 0, 0, 255))
+            font = frame.fonts.get("DejaVuSans", 120)  # type: ignore[attr-defined]
+            ImageDraw.Draw(image).text((0, 0), "initial", font=font, fill=(255, 255, 255, 255))
+            return RenderImage(image)
+
+    harness = PluginHarness(TextSample, {}, size=(600, 400))
+    try:
+        image = harness.render()
+        assert image is not None
+        ink = image.convert("L").point(lambda p: 255 if p > 128 else 0).getbbox()
+        assert ink is not None
+        height = ink[3] - ink[1]
+        assert height >= 60, f"the harness drew {height} px glyphs, not the requested 120 px"
+    finally:
+        harness.stop()
 
 
 def test_assert_conforms_passes_for_a_region_plugin() -> None:
