@@ -37,6 +37,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -370,13 +371,15 @@ class Runner:
                 the live config is left untouched.
             SettingsRejected: A plugin refused the change; the previous config
                 stays in effect.
+            OSError: The candidate could not be written; the live apply is
+                rolled back so the last good configuration stays in effect.
         """
         previous = self._config_data
         candidate_raw = copy.deepcopy(previous)
         _assign(candidate_raw, dotted, value)
         candidate = validate_config(candidate_raw)
         self._apply_live(previous, candidate)
-        self._config.save(candidate)
+        self._persist(previous, candidate)
         self._config_data = candidate
         return {"path": dotted, "value": _resolve(candidate, dotted), "applied": True}
 
@@ -387,7 +390,7 @@ class Runner:
         _remove(candidate_raw, dotted)
         candidate = validate_config(candidate_raw)
         self._apply_live(previous, candidate)
-        self._config.save(candidate)
+        self._persist(previous, candidate)
         self._config_data = candidate
         return {"path": dotted, "unset": True, "applied": True}
 
@@ -405,10 +408,28 @@ class Runner:
         candidate_raw = copy.deepcopy(previous)
         candidate_raw.setdefault("display", {})["brightness"] = value
         candidate = validate_config(candidate_raw)
-        self._apply_brightness(candidate["display"]["brightness"])
-        self._config.save(candidate)
+        self._apply_live(previous, candidate)
+        self._persist(previous, candidate)
         self._config_data = candidate
         return {"value": candidate["display"]["brightness"], "applied": True}
+
+    def _persist(self, previous: Mapping[str, Any], candidate: Mapping[str, Any]) -> None:
+        """Write ``candidate`` to disk, rolling the live apply back on failure.
+
+        The change is applied live *before* it is persisted (a plugin may refuse
+        it, and the apply order matters), so a persist failure must undo the live
+        apply — otherwise the sink, governor or layout would follow a
+        configuration that is not the last good one (FR-006).
+        """
+        try:
+            self._config.save(candidate)
+        except Exception as exc:
+            try:
+                self._apply_live(candidate, previous)
+            except Exception as rollback_exc:  # pragma: no cover - best effort
+                self._log.warning("config_rollback_failed", error=str(rollback_exc))
+            self._log.warning("config_save_failed", error=str(exc))
+            raise
 
     def brightness(self) -> int:
         return int(self._config_data.get("display", {}).get("brightness", 50))
@@ -642,7 +663,7 @@ class Runner:
         if self._compositor is None:
             return
         self._frame_index += 1
-        frame = FrameContext(
+        base = FrameContext(
             size=self._compositor.size,
             now=self._clock.monotonic(),
             wall=self._clock.time(),
@@ -651,7 +672,7 @@ class Runner:
             min_text_px=int(self._config_data.get("display", {}).get("min_text_px", 24)),
         )
         for name, worker in list(self._workers.items()):
-            worker.submit(frame)
+            worker.submit(self._region_frame(base, worker))
             worker.check_deadlines()
             self._compositor.set_state(name, worker.state)
             image = worker.last_image
@@ -659,6 +680,20 @@ class Runner:
                 self._last_images[name] = image
                 self._compositor.update(name, image)
         self._publish(self._compositor.composite())
+
+    @staticmethod
+    def _region_frame(base: FrameContext, worker: RenderWorker) -> FrameContext:
+        """A frame sized to ``worker``'s region.
+
+        The render contract (``contracts/plugin-sdk.md``) says an ``Image``
+        result is "exactly ``frame.size``", and the worker validates against its
+        region size — so the frame handed to a region plugin must carry that
+        region size, not the whole 1920x462 canvas.
+        """
+        expected = worker.size
+        if expected is None or (int(expected[0]), int(expected[1])) == tuple(base.size):
+            return base
+        return replace(base, size=(int(expected[0]), int(expected[1])))
 
     def _publish(self, canvas: Any) -> None:
         with self._slot_lock:
@@ -748,6 +783,7 @@ class Runner:
         if (previous.get("layout") or {}) != (candidate.get("layout") or {}):
             if self._compositor is not None:
                 self._compositor.set_layout(_layout_from(candidate))
+                self._refresh_worker_sizes()
         quality = new_display.get("jpeg_quality", {}) or {}
         if (old_display.get("jpeg_quality") or {}) != quality:
             self._build_encoder(candidate)
@@ -855,6 +891,16 @@ class Runner:
                     if region.name == overlay.region:
                         return (region.w, region.h)
         return None
+
+    def _refresh_worker_sizes(self) -> None:
+        """Re-point each worker at its (possibly resized) region.
+
+        A live layout change can move or resize the rectangle an instance draws
+        into; the worker's expected size (used both to size the render frame and
+        to validate the result) follows it.
+        """
+        for name, worker in self._workers.items():
+            worker.set_size(self._region_size_for(name))
 
     def _raise_alert(self, **_kwargs: Any) -> Any:
         """Route ``ctx.alert`` to the instance declaring the ``alert_sink`` capability."""

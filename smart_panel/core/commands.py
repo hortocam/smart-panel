@@ -21,7 +21,8 @@ from dataclasses import asdict
 from typing import Any
 
 from smart_panel.core.control import protocol
-from smart_panel.core.secrets import SecretNotFound
+from smart_panel.core.layout import LayoutError
+from smart_panel.core.secrets import SecretError, SecretNotFound
 from smart_panel.sdk.plugin import CommandError, SettingsRejected
 from smart_panel.sdk.settings import Setting, SettingError
 
@@ -124,6 +125,12 @@ def make_dispatch(runner: Any) -> Callable[[protocol.Request], Any]:
             raise protocol.ProtocolError(
                 "invalid_input", exc.message, setting=exc.setting
             ) from exc
+        except LayoutError as exc:
+            # A layout rule violation is a validation failure (exit 2), not an
+            # internal error: the message names the offending region (FR-006).
+            raise protocol.ProtocolError("invalid_input", str(exc), setting="layout") from exc
+        except SecretError as exc:
+            raise protocol.ProtocolError("invalid_input", str(exc)) from exc
         except CommandError as exc:
             raise protocol.ProtocolError("plugin_error", exc.message) from exc
         except SecretNotFound as exc:
@@ -422,19 +429,23 @@ def _logs_tail(runner: Any, args: dict[str, Any]) -> Any:
     if not args.get("follow"):
         return {"events": events[-lines:]}
 
+    # Captured before the generator is pulled, so events that arrive while the
+    # backlog is being delivered are not missed (the ring is a fixed-size deque,
+    # so length-based indexing stops seeing new events once it is full).
+    start_sequence = runner.log.sequence
+
     def stream() -> Iterator[dict[str, Any]]:
-        seen = len(events)
         for item in events[-lines:]:
             yield _log_event(item)
+        sequence = start_sequence
         # Streams until the client closes; the server keeps the connection open
         # and writes each yielded line as it arrives (control-protocol.md).
         while not runner.stopping:
             time.sleep(0.2)
-            current = runner.log.recent()
-            for item in current[seen:]:
+            for item in runner.log.events_since(sequence):
                 if _level_at_least(item, level):
                     yield _log_event(item)
-            seen = len(current)
+            sequence = runner.log.sequence
 
     return stream()
 
