@@ -10,6 +10,7 @@ the scheduler testable with a fake clock instead of real sleeps.
 from __future__ import annotations
 
 import itertools
+import math
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -38,6 +39,14 @@ class Task:
     last_started: float | None = None
     last_finished: float | None = None
     next_run: float | None = None
+    anchor: float | None = None
+    """The instant the current interval is measured from.
+
+    Set at registration (when the first run is not immediate) and on every
+    finish, so :meth:`Scheduler.set_interval_multiplier` can recompute a
+    pending ``next_run`` under a new multiplier without waiting for the task to
+    run again.
+    """
 
     def cancel(self) -> None:
         """Prevent any further runs of this task."""
@@ -76,7 +85,14 @@ class Scheduler:
             if identifier in self._tasks:
                 raise ValueError(f"duplicate task id {identifier!r}")
             now = self._clock.monotonic()
-            task = Task(id=identifier, fn=fn, interval_s=interval_s, timeout_s=timeout_s, name=name)
+            task = Task(
+                id=identifier,
+                fn=fn,
+                interval_s=interval_s,
+                timeout_s=timeout_s,
+                name=name,
+                anchor=now,
+            )
             delay = (interval_s or 0.0) * self._multiplier
             task.next_run = now if run_immediately else now + delay
             self._tasks[identifier] = task
@@ -120,11 +136,32 @@ class Scheduler:
         return timed_out
 
     def set_interval_multiplier(self, multiplier: float) -> None:
-        """Scale every task's interval (the governor raises this under load)."""
-        if multiplier <= 0:
-            raise ValueError("interval multiplier must be positive")
+        """Scale every task's interval (the governor raises this under load).
+
+        A pending task's ``next_run`` is recomputed immediately from its anchor,
+        so an already-scheduled interval picks up the new multiplier instead of
+        waiting until the task next finishes. A task that is already due is left
+        alone (it is about to run anyway).
+
+        Raises:
+            ValueError: ``multiplier`` is not a finite positive number. The
+                governor must never stretch intervals to infinity or NaN.
+        """
+        value = float(multiplier)
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("interval multiplier must be a finite positive number")
         with self._lock:
-            self._multiplier = float(multiplier)
+            self._multiplier = value
+            now = self._clock.monotonic()
+            for task in self._tasks.values():
+                if task.interval_s is None or task.cancelled or task.next_run is None:
+                    continue
+                if task.next_run <= now:
+                    continue  # already due; leave it for the next pump
+                anchor = task.last_finished if task.last_finished is not None else task.anchor
+                if anchor is None:
+                    continue
+                task.next_run = anchor + task.interval_s * value
 
     def cancel(self, task_id: str) -> Task | None:
         """Cancel one task by id."""
@@ -161,4 +198,5 @@ class Scheduler:
             if task.interval_s is None:
                 task.next_run = None
             else:
+                task.anchor = finished
                 task.next_run = finished + task.interval_s * self._multiplier

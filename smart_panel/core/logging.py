@@ -96,6 +96,10 @@ class RunnerLog:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._redactor = RedactionFilter()
         self._ring: deque[dict[str, Any]] = deque(maxlen=ring_size)
+        # A monotonic count of every event ever emitted. The ring is fixed-size,
+        # so its length stops growing at capacity; a ``logs.tail --follow``
+        # client tracks this number to find events it has not seen yet (T052).
+        self._sequence = 0
         self._logger = logging.getLogger(f"smart_panel.runner.{id(self)}")
         self._logger.setLevel(_LEVELS.get(level, logging.INFO))
         self._logger.propagate = False
@@ -136,6 +140,25 @@ class RunnerLog:
             return events[-limit:]
         return events
 
+    @property
+    def sequence(self) -> int:
+        """A monotonic count of every event ever emitted (never reset)."""
+        return self._sequence
+
+    def events_since(self, sequence: int) -> list[dict[str, Any]]:
+        """The retained events emitted after ``sequence``, oldest first.
+
+        ``sequence`` is a value previously read from :attr:`sequence`. The
+        result is bounded by the ring, so a follower that falls further behind
+        than the ring size sees only the events still retained — but it never
+        silently stalls the way length-based indexing does once the ring is full.
+        """
+        events = list(self._ring)
+        new = self._sequence - int(sequence)
+        if new <= 0:
+            return []
+        return events[-new:] if new < len(events) else events
+
     def close(self) -> None:
         """Flush and close the file handler."""
         self._handler.close()
@@ -146,6 +169,7 @@ class RunnerLog:
         payload.update(fields)
         payload = self._redact_object(payload)
         line = json.dumps(payload, default=str)
+        self._sequence += 1
         self._ring.append(json.loads(line))
         self._logger.log(_LEVELS[level], line)
 

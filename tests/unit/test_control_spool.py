@@ -144,6 +144,41 @@ class TestSpoolFiles:
         with pytest.raises(spool.SpoolMalformed):
             spool.read_entry(oversize)
 
+        # A *valid* entry that is over the 64 KiB limit: without the size guard
+        # it would parse cleanly, so this pins the boundary. The sample above is
+        # also invalid JSON and would be rejected anyway — it does not test the
+        # size guard. (Same species as the ``MAX_KV_BYTES`` boundary test.)
+        valid_oversize = tmp_path / "0004-x.json"
+        valid_oversize.write_text(
+            json.dumps(
+                {
+                    "v": 1,
+                    "received_at": 1.0,
+                    "cmd": "text.set",
+                    "args": {"text": "y" * (spool.MAX_FILE_BYTES + 1)},
+                }
+            )
+        )
+        assert valid_oversize.stat().st_size > spool.MAX_FILE_BYTES
+        with pytest.raises(spool.SpoolMalformed):
+            spool.read_entry(valid_oversize)
+
+        # ... and a valid entry just under the limit is accepted, so the guard
+        # is a boundary, not a blanket rejection.
+        at_limit = tmp_path / "0005-x.json"
+        at_limit.write_text(
+            json.dumps(
+                {
+                    "v": 1,
+                    "received_at": 1.0,
+                    "cmd": "text.set",
+                    "args": {"text": "y" * (spool.MAX_FILE_BYTES - 300)},
+                }
+            )
+        )
+        assert at_limit.stat().st_size <= spool.MAX_FILE_BYTES
+        assert spool.read_entry(at_limit).cmd == "text.set"
+
     def test_list_ignores_partial_tmp_files(self, tmp_path: Path) -> None:
         (tmp_path / "0001-in-flight.json.tmp").write_text("{}")
         real = spool.write_entry(tmp_path, "text.set", {}, received_at=2.0)
@@ -292,6 +327,18 @@ class TestSpoolIngest:
         directory.mkdir(parents=True)
         (directory / "0001-bad.json").write_text("{not json}")
         (directory / "0002-big.json").write_text("x" * (spool.MAX_FILE_BYTES + 1))
+        # A *valid* entry over the 64 KiB limit: it parses cleanly, so only the
+        # size guard rejects it (the "x" sample above is also invalid JSON).
+        (directory / "0004-valid-big.json").write_text(
+            json.dumps(
+                {
+                    "v": 1,
+                    "received_at": 2.0,
+                    "cmd": "text.set",
+                    "args": {"text": "y" * (spool.MAX_FILE_BYTES + 1)},
+                }
+            )
+        )
         spool.write_entry(directory, "text.set", {"text": "ok"}, received_at=3.0)
 
         replayed: list[dict] = []
@@ -302,9 +349,9 @@ class TestSpoolIngest:
 
         assert replayed == [{"text": "ok"}]
         assert result.replayed == 1
-        assert result.rejected == 2
+        assert result.rejected == 3
         assert not list(directory.glob("*.json"))
-        assert sum(1 for event, _ in log.events if event == "spool_rejected") == 2
+        assert sum(1 for event, _ in log.events if event == "spool_rejected") == 3
 
     def test_ingest_also_drains_the_owner_pending_directory(self, tmp_path: Path) -> None:
         home = tmp_path / "home"

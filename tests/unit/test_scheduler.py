@@ -140,3 +140,69 @@ def test_task_error_is_captured(fake_clock: FakeClock) -> None:
         assert task.last_error == "boom"
     finally:
         scheduler.stop()
+
+
+def test_set_multiplier_recomputes_a_pending_task_immediately(fake_clock: FakeClock) -> None:
+    """A task scheduled for the future picks up the new multiplier at once.
+
+    Before the fix the multiplier was only applied when a task *finished*, so an
+    already-scheduled interval kept the old multiplier until its next run — the
+    governor could not actually stretch source refreshes mid-interval.
+    """
+    scheduler = Scheduler(clock=fake_clock)
+    task = scheduler.spawn(lambda: None, interval_s=10, run_immediately=False)
+    try:
+        assert task.next_run == pytest.approx(10.0)
+        scheduler.set_interval_multiplier(2.0)
+        assert task.next_run == pytest.approx(20.0)
+        scheduler.set_interval_multiplier(4.0)
+        assert task.next_run == pytest.approx(40.0)
+    finally:
+        scheduler.stop()
+
+
+def test_set_multiplier_recomputes_a_finished_tasks_pending_run(fake_clock: FakeClock) -> None:
+    scheduler = Scheduler(clock=fake_clock)
+    done = threading.Event()
+    task = scheduler.spawn(lambda: done.set(), interval_s=10)
+    try:
+        assert scheduler.run_pending() == 1
+        assert done.wait(2)
+        _wait_until(lambda: not task.running)
+        assert task.next_run == pytest.approx(10.0)  # finished at 0 + 10s
+
+        fake_clock.advance(5)
+        scheduler.set_interval_multiplier(2.0)
+        # Re-measured from the finish (0), not from the change (5) or the old
+        # due time (10): the whole interval is 10 * 2 = 20.
+        assert task.next_run == pytest.approx(20.0)
+    finally:
+        scheduler.stop()
+
+
+def test_set_multiplier_leaves_an_already_due_task_due(fake_clock: FakeClock) -> None:
+    scheduler = Scheduler(clock=fake_clock)
+    calls: list[int] = []
+    task = scheduler.spawn(lambda: calls.append(1), interval_s=10)
+    try:
+        assert task.next_run == pytest.approx(0.0)  # due immediately
+        scheduler.set_interval_multiplier(2.0)
+        assert task.next_run == pytest.approx(0.0)  # not pushed into the future
+        assert scheduler.run_pending() == 1
+        _wait_until(lambda: not task.running)
+        assert calls == [1]
+    finally:
+        scheduler.stop()
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan"), 0.0, -1.0])
+def test_set_multiplier_rejects_non_finite_or_non_positive(
+    fake_clock: FakeClock, bad: float
+) -> None:
+    """The governor must never stretch intervals to infinity or NaN."""
+    scheduler = Scheduler(clock=fake_clock)
+    try:
+        with pytest.raises(ValueError):
+            scheduler.set_interval_multiplier(bad)
+    finally:
+        scheduler.stop()

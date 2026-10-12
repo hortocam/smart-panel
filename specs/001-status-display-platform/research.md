@@ -138,7 +138,7 @@ All Technical Context unknowns are resolved below. Each entry is **Decision / Ra
 
 ## 17. Panel connection handling
 
-**Decision**: The `HidSink` owns open/close, retries with backoff (1, 2, 4, 8, 10 s cap), sends CRTDIS+CRTLIG on every successful open, reapplies brightness, and counts consecutive write failures. After 3 consecutive failures it closes the handle and re-enters the reconnect loop. If the device opens but writes keep failing for more than 60 s, status reports `panel_unresponsive` with a power-cycle hint (the controller hang observed without the init sequence cannot be recovered in software).
+**Decision**: The `HidSink` owns open/close, retries with backoff (1, 2, 4, 8, 10 s cap), sends CRTDIS+CRTLIG on every successful open, reapplies brightness, and **reopens the handle on the first mid-stream write failure**. The T129 hardware policy supersedes the earlier "after 3 consecutive failures" wording: the panel intermittently stops accepting OUT reports with no USB disconnect and reopening recovers it on the first attempt every time, so a failure threshold would burn the stall window on retries that cannot succeed against a dead handle. `panel_unresponsive` with a power-cycle hint is reported only when the **open** keeps failing for more than 60 s (the controller hang observed without the init sequence cannot be recovered in software); a mid-stream stall that reopens successfully recovers immediately.
 
 **Rationale**: FR-009, FR-010, Principle II, SC-007.
 

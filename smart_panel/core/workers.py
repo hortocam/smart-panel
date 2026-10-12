@@ -161,6 +161,19 @@ class RenderWorker:
             return self._last_error
 
     @property
+    def size(self) -> tuple[int, int] | None:
+        """The expected region size an ``Image`` result is validated against.
+
+        ``None`` means the instance has no region, so the output size is not
+        checked (the frame's own size is used for rendering).
+        """
+        return self._size
+
+    def set_size(self, size: tuple[int, int] | None) -> None:
+        """Update the expected region size (the layout can change live)."""
+        self._size = (int(size[0]), int(size[1])) if size else None
+
+    @property
     def in_flight(self) -> bool:
         """Whether a render is currently executing."""
         with self._lock:
