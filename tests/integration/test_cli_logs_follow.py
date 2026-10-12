@@ -7,6 +7,12 @@ the client's ``ControlClient.stream()`` yields each decoded line, ``misc._follow
 writes it through ``Output.emit_line`` and returns the ``STREAMED`` sentinel so the
 dispatcher adds no envelope, and the process exits when the server closes.
 
+Three exits are pinned here (``contracts/cli.md``, "Streaming commands"): a
+genuine server close exits 0; ``--timeout`` bounds only the connect and
+handshake, so an *idle* follow stays parked (it does not exit while the log is
+quiet); and a follow with **no runner** exits 3 ``runner_not_running``, like the
+non-follow ``logs`` path.
+
 This drives the real CLI as a subprocess against a real in-process
 ``ControlServer`` with a scripted dispatch (the harness style of
 ``tests/integration/test_spool.py``), so the assertion is on the bytes on stdout
@@ -113,6 +119,21 @@ def _events(items: list[dict[str, object]]) -> Iterator[dict[str, object]]:
     time.sleep(0.2)
 
 
+def _events_with_idle_gap(
+    items: list[dict[str, object]], gap_s: float
+) -> Iterator[dict[str, object]]:
+    """Yield the first two events, stay silent for ``gap_s``, then the rest.
+
+    The silent gap is longer than the CLI's ``--timeout`` in the test that uses
+    this, so a follow that stays parked through it proves the timeout bounds the
+    connect/handshake only and is not a liveness limit on the open stream.
+    """
+    yield from items[:2]
+    time.sleep(gap_s)
+    yield from items[2:]
+    time.sleep(0.2)
+
+
 def test_follow_writes_one_json_line_per_event_and_exits_when_the_server_closes(
     follow_host: FollowHost,
 ) -> None:
@@ -140,3 +161,43 @@ def test_follow_writes_one_json_line_per_event_and_exits_when_the_server_closes(
     lines = proc.stdout.splitlines()
     assert len(lines) == len(EVENTS)
     assert [json.loads(line) for line in lines] == EVENTS
+
+
+def test_follow_stays_parked_through_an_idle_gap_longer_than_the_timeout(
+    follow_host: FollowHost,
+) -> None:
+    """An idle stream must not exit on ``--timeout``; it exits 0 on the close.
+
+    The server holds the stream silent for longer than the CLI's ``--timeout``
+    (0.5 s) between the second and third event, then closes it. If the timeout
+    were a liveness limit on the open stream the client would exit 1 mid-gap and
+    never write the third event; a genuine close still exits 0 with every event.
+    """
+
+    def dispatch(request: protocol.Request) -> Iterator[dict[str, object]]:
+        return _events_with_idle_gap(EVENTS, gap_s=1.5)
+
+    server = _serve(dispatch, follow_host)
+    try:
+        proc = follow_host.cli("--json", "--timeout", "0.5", "logs", "--follow")
+    finally:
+        server.stop()
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    lines = proc.stdout.splitlines()
+    assert [json.loads(line) for line in lines] == EVENTS
+
+
+def test_follow_with_no_runner_exits_runner_not_running(follow_host: FollowHost) -> None:
+    """A follow against no runner exits 3, matching the non-follow ``logs`` path.
+
+    No server is started, so the connect fails with ``ENOENT`` before the
+    handshake; the streaming path must map it to ``runner_not_running`` (exit 3)
+    exactly as ``ControlClient.call`` already does for one-shot commands.
+    """
+    proc = follow_host.cli("--json", "logs", "--follow")
+
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout.splitlines()[0])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "runner_not_running"

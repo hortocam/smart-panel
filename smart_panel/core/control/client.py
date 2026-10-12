@@ -213,9 +213,27 @@ class ControlClient:
         Used for ``logs.tail --follow``: the server answers with a sequence of
         ``{"event": "log", ...}`` objects (``contracts/control-protocol.md``)
         rather than a single response, so the raw decoded objects are yielded.
+
+        ``timeout`` bounds the connect and hello handshake only. A follow is
+        expected to stay parked while the server has nothing to say, so the
+        socket is switched to blocking reads for the stream itself
+        (``contracts/cli.md``, "Streaming commands") — an idle gap must not exit
+        the follow. A connect failure is mapped to
+        :class:`RunnerUnavailable` so a follow with no runner reports
+        ``runner_not_running`` (exit 3), matching :meth:`call`.
+
+        Raises:
+            RunnerUnavailable: No runner is listening on the socket.
+            ImpersonationRefused: The path is owned by an unrelated account.
+            ControlClientError: The runner answered the handshake with an error.
         """
         if self._sock is None:
-            self.connect()
+            try:
+                self.connect()
+            except OSError as exc:
+                raise RunnerUnavailable(f"the runner is not running: {exc}") from exc
+        assert self._sock is not None
+        self._sock.settimeout(None)
         request = protocol.Request(cmd=cmd, args=dict(args or {}), id=next(self._ids))
         self._send(request.to_obj())
         while True:
