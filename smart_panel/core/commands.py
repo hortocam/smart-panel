@@ -345,6 +345,19 @@ def _plugin_instance_list(runner: Any, _args: dict[str, Any]) -> dict[str, Any]:
 def _plugin_instance_add(runner: Any, args: dict[str, Any]) -> dict[str, Any]:
     name = _require(args, "name")
     plugin = _require(args, "plugin")
+    loader = runner.loader
+    if loader is not None and str(plugin) not in loader.loaded():
+        # FR-006: validate before applying.  An instance whose ``plugin`` the
+        # loader never discovered would persist but never start — on the next
+        # apply ``Runner._start_instance`` finds no ``plugin_class`` and logs
+        # ``instance_skipped`` forever, a "dead" instance that
+        # ``plugin instance list`` still reports.  Reject it (exit 2) instead,
+        # naming the offending setting.
+        raise protocol.ProtocolError(
+            "invalid_input",
+            f"plugin {plugin!r} is not installed or available",
+            setting=f"plugins.{name}.plugin",
+        )
     instance = {"plugin": plugin, "enabled": True, "settings": dict(args.get("settings", {}) or {})}
     return runner.set_config(f"plugins.{name}", instance)
 
