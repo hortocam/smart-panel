@@ -74,6 +74,24 @@ def default_config() -> dict[str, Any]:
     }
 
 
+def initial_config() -> dict[str, Any]:
+    """The config a fresh install starts from (T061).
+
+    Unlike :func:`default_config` — the empty schema base every document is
+    validated against — this seeds one instance per *registered* built-in and
+    the default layout filtered to the instances that exist, so a first start
+    always validates and the CLI can drive the built-ins before a config file
+    has ever been written.
+    """
+    from smart_panel.core.defaults import default_layout_for
+    from smart_panel.plugins import builtin_instances
+
+    instances = builtin_instances()
+    return validate_config(
+        {"plugins": instances, "layout": default_layout_for(instances)}
+    )
+
+
 def migrate(raw: Mapping[str, Any]) -> dict[str, Any]:
     """Apply registered migrations up to :data:`CURRENT_VERSION`."""
     if not isinstance(raw, Mapping):
@@ -153,11 +171,16 @@ class Config:
         return copy.deepcopy(self._data)
 
     def load(self) -> dict[str, Any]:
-        """Read, migrate and validate the file (or return defaults when absent)."""
+        """Read, migrate and validate the file (or seed the initial config).
+
+        When no file exists yet, the *initial* config is used (T061): the
+        registered built-ins and the default layout filtered to their instances,
+        not the bare schema defaults.
+        """
         if self.path.exists():
             raw = json.loads(self.path.read_text(encoding="utf-8") or "{}")
         else:
-            raw = {}
+            raw = initial_config()
         self._data = validate_config(migrate(raw))
         return copy.deepcopy(self._data)
 

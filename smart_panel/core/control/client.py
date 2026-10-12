@@ -207,6 +207,23 @@ class ControlClient:
             raise RunnerUnavailable("the runner closed the connection")
         return protocol.Response.from_obj(reply)
 
+    def stream(self, cmd: str, args: dict[str, Any] | None = None) -> Any:
+        """Send one command and yield each event line until the server closes.
+
+        Used for ``logs.tail --follow``: the server answers with a sequence of
+        ``{"event": "log", ...}`` objects (``contracts/control-protocol.md``)
+        rather than a single response, so the raw decoded objects are yielded.
+        """
+        if self._sock is None:
+            self.connect()
+        request = protocol.Request(cmd=cmd, args=dict(args or {}), id=next(self._ids))
+        self._send(request.to_obj())
+        while True:
+            reply = self._receive()
+            if reply is None:
+                return
+            yield reply
+
     def _spool(
         self, cmd: str, args: dict[str, Any] | None, *, received_at: float | None
     ) -> protocol.Response:

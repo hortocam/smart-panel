@@ -28,6 +28,13 @@ puts "unknown plugin" at exit 2 for the CLI as a whole, so ``config set`` now
 rejects it with the same ``invalid_input`` / ``plugins.<name>.plugin`` message
 as ``plugin.instance.add`` — the loader's ``instance_skipped`` warning stays the
 backstop for a hand-edited ``config.json``.
+
+F5 ordering (the wave-3 carry-over) — nothing pinned *when* ``plugin.instance.add``
+runs the shared guard relative to the settings coercion. A mutation that moved
+the guard after ``dict(args.get("settings") or {})`` left the whole suite green
+while turning "unknown plugin **and** malformed settings" from ``invalid_input``
+(exit 2) into ``internal`` (exit 1): the coercion raises first. The ordering is
+now pinned, so the plugin refusal is always the error a caller sees.
 """
 
 from __future__ import annotations
@@ -200,6 +207,28 @@ def test_adding_an_instance_for_a_discovered_plugin_is_accepted(tmp_path: Path) 
 
     assert response.ok
     assert runner.config_data["plugins"]["hello"]["plugin"] == "text"
+
+
+def test_adding_an_instance_runs_the_guard_before_coercing_settings(tmp_path: Path) -> None:
+    # FR-006 ordering: the plugin guard runs BEFORE the settings are coerced.
+    # ``["not-a-pair"]`` cannot be coerced to a dict (ValueError), so if the
+    # guard ran after ``dict(args.get("settings") or {})`` this would surface as
+    # ``internal`` (exit 1) instead of the actionable ``invalid_input`` (exit 2).
+    loader = PluginLoader(builtins={}, home=tmp_path / "plugins")
+    runner = _StubRunner(loader=loader)
+    dispatch = make_dispatch(runner)
+
+    with pytest.raises(protocol.ProtocolError) as excinfo:
+        dispatch(
+            protocol.Request(
+                "plugin.instance.add",
+                {"name": "dead", "plugin": "no-such-plugin", "settings": ["not-a-pair"]},
+            )
+        )
+
+    assert excinfo.value.code == "invalid_input"
+    assert excinfo.value.setting == "plugins.dead.plugin"
+    assert runner.config_data["plugins"] == {}
 
 
 # ------------------------------------- F5 followup: config set plugins.<name>
