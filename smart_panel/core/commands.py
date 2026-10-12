@@ -20,6 +20,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import asdict
 from typing import Any
 
+from smart_panel.core.config import assign
 from smart_panel.core.control import protocol
 from smart_panel.core.layout import LayoutError
 from smart_panel.core.secrets import SecretError, SecretNotFound
@@ -184,6 +185,16 @@ def _config_set(runner: Any, args: dict[str, Any]) -> dict[str, Any]:
     path = _require(args, "path")
     if "value" not in args:
         raise protocol.ProtocolError("invalid_input", "config.set needs a 'value'")
+    if path == "plugins" or path.startswith("plugins."):
+        # FR-006: validate before applying.  ``config set`` is the generic escape
+        # hatch, but a plugins entry naming a plugin the loader never discovered
+        # is exactly the "dead" instance ``plugin.instance.add`` rejects after
+        # F5 (and ``contracts/cli.md`` lists "unknown plugin" at exit 2 for the
+        # CLI as a whole).  Inspect the *resulting* subtree, not just the value,
+        # so a dotted sub-key such as ``plugins.<name>.plugin`` cannot create one
+        # either.  The write is refused before ``set_config`` touches anything.
+        candidate = assign(runner.config_data, path, args["value"])
+        _guard_plugin_instances(runner, candidate.get("plugins"))
     return runner.set_config(path, args["value"])
 
 
@@ -575,6 +586,34 @@ def _resolve(data: Mapping[str, Any], dotted: str) -> Any:
             return None
         current = current[part]
     return current
+
+
+def _guard_plugin_instances(runner: Any, instances: Any) -> None:
+    """Reject plugin instances naming a plugin the loader never discovered.
+
+    The criterion is exactly the one :meth:`Runner._start_instance` applies — a
+    plugin absent from ``loader.loaded()`` — so no CLI config write can persist an
+    instance the runner would only ever log ``instance_skipped`` for (FR-006).
+    This is the guard ``plugin.instance.add`` applies inline after F5; ``config
+    set`` routes its plugins edits through here so both paths agree.  With no
+    loader there is nothing to check against, so the write is allowed, matching
+    ``plugin.instance.add``; a value that fails structural validation (a missing
+    or non-string ``plugin``) is left to ``validate_config``.
+    """
+    loader = runner.loader
+    if loader is None or not isinstance(instances, Mapping):
+        return
+    loaded = loader.loaded()
+    for name, instance in instances.items():
+        if not isinstance(instance, Mapping):
+            continue
+        plugin = instance.get("plugin")
+        if plugin is not None and str(plugin) not in loaded:
+            raise protocol.ProtocolError(
+                "invalid_input",
+                f"plugin {plugin!r} is not installed or available",
+                setting=f"plugins.{name}.plugin",
+            )
 
 
 def _level_at_least(event: Mapping[str, Any], level: str | None) -> bool:

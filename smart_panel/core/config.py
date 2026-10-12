@@ -127,6 +127,19 @@ def validate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
     return cfg
 
 
+def assign(document: Mapping[str, Any], dotted: str, value: Any) -> dict[str, Any]:
+    """Return a copy of ``document`` with ``dotted`` set to ``value``.
+
+    The dotted-path write *without* validation, so a caller can inspect the
+    candidate a ``config set`` would produce before the runner applies and
+    persists it (FR-006).  :meth:`Config.set` uses the same assignment
+    internally; this exposes it for callers outside this module.
+    """
+    candidate = copy.deepcopy(dict(document))
+    _assign(candidate, dotted, value)
+    return candidate
+
+
 class Config:
     """A config document on disk plus its in-memory (live) copy."""
 
