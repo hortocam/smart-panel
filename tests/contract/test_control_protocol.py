@@ -336,6 +336,51 @@ class TestControlServer:
         finally:
             server.stop()
 
+    def test_a_non_mutating_command_over_its_deadline_returns_timeout(
+        self, runtime: Path
+    ) -> None:
+        """Every command carries the deadline, not only mutating plugin verbs.
+
+        ``_dispatch_request`` used to return ``future.result()`` with no
+        deadline on the non-mutating branch, so a slow ``runner.status`` (or
+        any other ordinary command) held the single dispatch worker until it
+        finished and every other client queued behind it
+        (``contracts/control-protocol.md``, Atomicity and ordering). The ruled
+        option (a) bounds the response for every command, reusing
+        ``command_timeout_s``.
+        """
+
+        def dispatch(request: protocol.Request) -> protocol.Response:
+            time.sleep(0.4)
+            return protocol.Response.success(request.id, {})
+
+        server = _serve(dispatch, runtime, command_timeout_s=0.05)
+        try:
+            peer = _RawPeer(server.socket_path)
+            peer.recv()
+            peer.send({"id": 6, "cmd": "runner.status", "args": {}})
+            reply = peer.recv()
+            assert reply is not None and reply["error"]["code"] == "timeout"
+            assert reply["id"] == 6
+            peer.close()
+        finally:
+            server.stop()
+
+    def test_a_fast_command_still_answers_inside_the_deadline(self, runtime: Path) -> None:
+        """The deadline must not fire on a command that finishes in time."""
+
+        server = _serve(_echo_dispatch, runtime, command_timeout_s=2.0)
+        try:
+            peer = _RawPeer(server.socket_path)
+            peer.recv()
+            peer.send({"id": 7, "cmd": "runner.status", "args": {}})
+            reply = peer.recv()
+            assert reply is not None and reply["ok"] is True
+            assert reply["data"] == {"echo": "runner.status"}
+            peer.close()
+        finally:
+            server.stop()
+
     def test_an_unexpected_dispatch_failure_is_an_internal_error(self, runtime: Path) -> None:
         def dispatch(request: protocol.Request) -> protocol.Response:
             raise RuntimeError("boom")

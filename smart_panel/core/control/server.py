@@ -9,8 +9,10 @@ root on top of that.
 
 Commands from every connection run through one serialized queue (a single
 worker), so two commands that arrive together get a defined order and never
-interleave. A mutating plugin verb has a deadline (2 s by default); on overrun
-the client is told ``timeout`` while the worker finishes in the background.
+interleave. Every command has a deadline (2 s by default); on overrun the client
+is told ``timeout`` while the worker finishes in the background. The deadline
+bounds the response, not the worker: the command is not cancelled, so a stuck
+one still holds the serialized worker and delays the commands behind it.
 ``logs.tail --follow`` is the one streaming command: the dispatch returns an
 iterator and its events are written as they arrive, until the client closes.
 """
@@ -52,9 +54,7 @@ class ControlServer:
         log: Optional runner log for denials and dispatch failures.
         plugins_rev: The plugin-set revision announced in the hello; an int or a
             callable returning one.
-        command_timeout_s: Deadline for a mutating plugin verb.
-        is_mutating: Which requests take the deadline; defaults to
-            ``cmd == "plugin.call"`` (the runner may narrow it per manifest).
+        command_timeout_s: Deadline for every command's response.
     """
 
     def __init__(
@@ -67,7 +67,6 @@ class ControlServer:
         server_version: str = __version__,
         plugins_rev: int | Callable[[], int] = 0,
         command_timeout_s: float = DEFAULT_COMMAND_TIMEOUT_S,
-        is_mutating: Callable[[protocol.Request], bool] | None = None,
     ) -> None:
         self._dispatch = dispatch
         self._policy_provider = policy_provider
@@ -76,7 +75,6 @@ class ControlServer:
         self._server_version = server_version
         self._plugins_rev = plugins_rev
         self._command_timeout_s = float(command_timeout_s)
-        self._is_mutating = is_mutating if is_mutating is not None else _plugin_call
         self._queue = ThreadPoolExecutor(max_workers=1, thread_name_prefix="control-dispatch")
         self._listener: socket.socket | None = None
         self._thread: threading.Thread | None = None
@@ -250,9 +248,17 @@ class ControlServer:
     # -- the serialized command queue -------------------------------------- #
 
     def _dispatch_request(self, request: protocol.Request) -> Any:
+        """Run the command on the worker and bound its *response* by the deadline.
+
+        Every command carries the deadline, not just mutating plugin verbs
+        (``contracts/control-protocol.md``): a slow ordinary command would
+        otherwise hold the single serialized worker until it finished and every
+        other client would queue behind it. The timeout does not cancel the
+        in-flight command, so it still occupies the worker in the background;
+        what the bound buys is that a silent, indefinite hang becomes a fast,
+        diagnosable ``timeout`` failure with a ``command_timeout`` warning.
+        """
         future = self._queue.submit(self._run_dispatch, request)
-        if not self._is_mutating(request):
-            return future.result()
         try:
             return future.result(timeout=self._command_timeout_s)
         except TimeoutError:
@@ -283,8 +289,3 @@ class ControlServer:
     def _plugins_rev_value(self) -> int:
         value = self._plugins_rev
         return int(value() if callable(value) else value)
-
-
-def _plugin_call(request: protocol.Request) -> bool:
-    """The default deadline rule: every generic plugin call is mutating."""
-    return request.cmd == "plugin.call"

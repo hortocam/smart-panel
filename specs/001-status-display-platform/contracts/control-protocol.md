@@ -60,7 +60,8 @@ For every connection the server obtains `(uid, gid)` from the kernel and the pee
 
 - Commands from different connections are serialized through one command queue, giving a defined order when two arrive together (spec edge case).
 - A `config.set` is validated and applied atomically: on any validation error nothing changes and the last good configuration stays in effect (FR-006). After a successful apply the file is written with a temp file plus rename.
-- `plugin.call` has a 2 s deadline for mutating verbs by default; overrun returns `timeout` and the plugin is marked `degraded`.
+- Every command has a 2 s deadline by default (`command_timeout_s` on the server), not only mutating `plugin.call`: an overrun returns `timeout` and the server logs a `command_timeout` warning. A mutating `plugin.call` that overruns is additionally marked `degraded`.
+- The deadline bounds the **response, not the worker**. On overrun the command is not cancelled, so it keeps running and holds the single dispatch worker — the client that sent it is answered `timeout` promptly, but any command that arrives behind it waits until the worker is free. What the bound buys is that a silent, indefinite hang becomes a fast, diagnosable failure; it is not a promise that the worker stays available.
 
 ## Spool (runner not running)
 
