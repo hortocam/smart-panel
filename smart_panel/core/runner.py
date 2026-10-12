@@ -17,8 +17,12 @@ Thread layout (``research.md`` decision 3):
 
 Startup is safe with no panel attached: the sink retries opening in the
 background while the runner keeps composing. The spool is ingested *before the
-first frame* (contract ``control-protocol.md``), and ``status`` aggregates the
-panel, frame, layout, plugin and spool state.
+first frame* (contract ``control-protocol.md``), and the first frame is itself
+held back until a compose pass carries region content (or until every instance
+has delivered its first render, so an ``Inactive``-only layout still starts) —
+so ``start``/``restart`` never return on the bare background and an immediate
+``preview`` is not blank. ``status`` aggregates the panel, frame, layout, plugin
+and spool state.
 
 A test-only ``clock_file`` (honored only when ``SMART_PANEL_TESTING=1``) lets a
 subprocess integration test advance a fake clock by writing the file; it can
@@ -204,6 +208,10 @@ class Runner:
         self._started_at: float | None = None
         self._frame_index = 0
         self._frames_sent = 0
+        # The first frame is held back until a pass carries region content (see
+        # ``_release_first_frame``); until then the compositor canvas is the bare
+        # background because no worker has produced an image yet.
+        self._first_frame_published = False
         self._frame_stamps: deque[float] = deque(maxlen=_DEFAULT_FRAME_WINDOW)
         self._last_bytes: int | None = None
         self._reconnects = 0
@@ -671,15 +679,73 @@ class Runner:
             bus=self._bus,
             min_text_px=int(self._config_data.get("display", {}).get("min_text_px", 24)),
         )
+        # ``delivered`` is read from the same state the compositor is given, so
+        # the gate and the canvas it releases cannot disagree (a worker that
+        # finishes its first render between ``set_state`` and the gate would
+        # otherwise release a canvas composed before its state was known).
+        delivered = True
         for name, worker in list(self._workers.items()):
             worker.submit(self._region_frame(base, worker))
             worker.check_deadlines()
-            self._compositor.set_state(name, worker.state)
+            state = worker.state
+            self._compositor.set_state(name, state)
+            if state == InstanceState.STARTING:
+                delivered = False
             image = worker.last_image
             if image is not None and self._last_images.get(name) is not image:
                 self._last_images[name] = image
                 self._compositor.update(name, image)
-        self._publish(self._compositor.composite())
+        # Read the compositor's dirty set *before* composing (composing clears
+        # it): it is the "something visible moved this pass" signal the first
+        # frame gate needs.
+        changed = bool(self._compositor.dirty_regions())
+        canvas = self._compositor.composite()
+        if not self._release_first_frame(changed, delivered):
+            return
+        self._publish(canvas)
+
+    def _release_first_frame(self, changed: bool, delivered: bool) -> bool:
+        """Whether this pass may publish, holding the *first* frame back (T051).
+
+        A :class:`~smart_panel.core.workers.RenderWorker` renders on its own
+        thread, so the first pass after ``start`` submits a frame and reads
+        ``worker.last_image`` before any worker has produced one: publishing
+        then sends the bare background as the runner's first frame, and
+        ``start``/``restart`` return on it (``frames.sent > 0``), so an
+        immediate ``preview`` could catch an empty canvas — observed on a loaded
+        macOS CI runner, where the gap to the first content frame is longer than
+        the next CLI round-trip.
+
+        The first frame is therefore held back until a pass that carries
+        something visible (``changed``: a new region layer, or a
+        ``degraded``/``stalled`` instance's error badge, which is never blank),
+        or until every instance has delivered its first render result
+        (``delivered``) — so a layout whose instances never draw (``Inactive``
+        forever) still starts, bounded, and a plugin that never returns is
+        bounded by its worker's hard deadline. That first frame really is the
+        bare background, so it is explained in ``status`` rather than reported
+        as content.
+        """
+        if self._first_frame_published:
+            return True
+        if not changed and not delivered:
+            return False
+        self._first_frame_published = True
+        if not changed and self._workers:
+            self._log_blank_first_frame()
+        return True
+
+    def _log_blank_first_frame(self) -> None:
+        """Record why the first frame carries no region content (T051)."""
+        plugins = {name: str(worker.state) for name, worker in self._workers.items()}
+        self._log.warning(
+            "first_frame_without_content",
+            message=(
+                "sending a first frame with no region content: no instance has "
+                "drawn anything, so the canvas is the bare background until one does"
+            ),
+            plugins=plugins,
+        )
 
     @staticmethod
     def _region_frame(base: FrameContext, worker: RenderWorker) -> FrameContext:
