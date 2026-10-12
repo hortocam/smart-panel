@@ -24,9 +24,9 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image as PILImage
-from PIL import ImageFont
 
 from smart_panel.core.bus import Bus
+from smart_panel.core.fonts import FontRegistry
 from smart_panel.sdk.context import (
     FrameContext,
     InstanceContext,
@@ -104,16 +104,21 @@ class _DictKV:
 
 
 class _DefaultFonts:
-    """A small font resolver so a render that draws text still works headless."""
+    """The runner's font resolution, so the harness renders like production.
+
+    This used to answer every request with ``ImageFont.load_default()``, which
+    ignores the requested name **and** size: a plugin whose ``text`` settings ask
+    for 120 px renders ~8 px here while the runner draws 120 px, so a harness
+    test could not catch a font/size defect. It now resolves through the same
+    :class:`~smart_panel.core.fonts.FontRegistry` the runner injects (bundled
+    DejaVu fonts, explicit TTF paths, the configured fallback chain).
+    """
 
     def __init__(self) -> None:
-        self._cache: dict[tuple[str, int], Any] = {}
+        self._registry = FontRegistry()
 
     def get(self, name: str | None = None, size: int = 12) -> Any:
-        key = (str(name), int(size))
-        if key not in self._cache:
-            self._cache[key] = ImageFont.load_default()
-        return self._cache[key]
+        return self._registry.get("DejaVuSans" if name is None else name, int(size))
 
 
 class _DefaultIcons:
