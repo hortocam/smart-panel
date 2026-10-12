@@ -19,6 +19,15 @@ the next apply ``Runner._start_instance`` found no ``plugin_class`` and logged
 still reported. FR-006 requires the change to be validated before it is applied,
 so the handler rejects the unknown name (``invalid_input``, CLI exit 2) naming
 the setting and persists nothing.
+
+F5 followup — the generic dotted-path setter had the same hole: ``config set
+plugins.<name> '{...}'`` (or a dotted sub-key such as ``plugins.<name>.plugin``)
+persisted an instance whose ``plugin`` the loader never discovered. FR-006
+requires the change to be validated before it is applied and ``contracts/cli.md``
+puts "unknown plugin" at exit 2 for the CLI as a whole, so ``config set`` now
+rejects it with the same ``invalid_input`` / ``plugins.<name>.plugin`` message
+as ``plugin.instance.add`` — the loader's ``instance_skipped`` warning stays the
+backstop for a hand-edited ``config.json``.
 """
 
 from __future__ import annotations
@@ -191,6 +200,138 @@ def test_adding_an_instance_for_a_discovered_plugin_is_accepted(tmp_path: Path) 
 
     assert response.ok
     assert runner.config_data["plugins"]["hello"]["plugin"] == "text"
+
+
+# ------------------------------------- F5 followup: config set plugins.<name>
+
+
+def test_config_set_of_an_instance_for_an_unknown_plugin_is_invalid_input(
+    tmp_path: Path,
+) -> None:
+    loader = PluginLoader(builtins={}, home=tmp_path / "plugins")
+    dispatch = make_dispatch(_StubRunner(loader=loader))
+
+    with pytest.raises(protocol.ProtocolError) as excinfo:
+        dispatch(
+            protocol.Request(
+                "config.set",
+                {
+                    "path": "plugins.dead",
+                    "value": {"plugin": "no-such-plugin", "enabled": True, "settings": {}},
+                },
+            )
+        )
+
+    assert excinfo.value.code == "invalid_input"
+    assert "no-such-plugin" in excinfo.value.message
+    # FR-006: the message identifies the setting, exactly as plugin.instance.add.
+    assert excinfo.value.setting == "plugins.dead.plugin"
+
+
+def test_config_set_of_an_instance_for_an_unknown_plugin_persists_nothing(
+    tmp_path: Path,
+) -> None:
+    loader = PluginLoader(builtins={}, home=tmp_path / "plugins")
+    runner = _StubRunner(loader=loader)
+    dispatch = make_dispatch(runner)
+
+    with pytest.raises(protocol.ProtocolError):
+        dispatch(
+            protocol.Request(
+                "config.set",
+                {"path": "plugins.dead", "value": {"plugin": "no-such-plugin"}},
+            )
+        )
+
+    # No dead instance: the config was never written through set_config.
+    assert runner.config_data["plugins"] == {}
+
+
+def test_config_set_creating_a_dead_instance_through_a_dotted_key_is_rejected(
+    tmp_path: Path,
+) -> None:
+    # plugins.dead.plugin on its own passes structural validation (enabled
+    # defaults to True, settings to {}), so the guard must inspect the resulting
+    # subtree rather than only a whole-instance value.
+    loader = PluginLoader(builtins={}, home=tmp_path / "plugins")
+    runner = _StubRunner(loader=loader)
+    dispatch = make_dispatch(runner)
+
+    with pytest.raises(protocol.ProtocolError) as excinfo:
+        dispatch(
+            protocol.Request(
+                "config.set", {"path": "plugins.dead.plugin", "value": "no-such-plugin"}
+            )
+        )
+
+    assert excinfo.value.code == "invalid_input"
+    assert excinfo.value.setting == "plugins.dead.plugin"
+    assert runner.config_data["plugins"] == {}
+
+
+def test_config_set_of_a_dead_instance_left_by_a_hand_edited_config_is_rejected(
+    tmp_path: Path,
+) -> None:
+    # A config.json can still be hand-edited and reloaded; the runner then only
+    # logs instance_skipped for that entry. config set must not carry it forward.
+    loader = PluginLoader(builtins={}, home=tmp_path / "plugins")
+    runner = _StubRunner(loader=loader)
+    runner.set_config("plugins.dead", {"plugin": "no-such-plugin", "enabled": True})
+    dispatch = make_dispatch(runner)
+
+    with pytest.raises(protocol.ProtocolError) as excinfo:
+        dispatch(
+            protocol.Request("config.set", {"path": "plugins.dead.enabled", "value": False})
+        )
+
+    assert excinfo.value.code == "invalid_input"
+    assert excinfo.value.setting == "plugins.dead.plugin"
+
+
+def test_config_set_of_an_instance_for_a_discovered_plugin_is_accepted(
+    tmp_path: Path,
+) -> None:
+    loader = PluginLoader(builtins={"text": _TinyRegionPlugin}, home=tmp_path / "plugins")
+    runner = _StubRunner(loader=loader)
+    dispatch = make_dispatch(runner)
+
+    response = dispatch(
+        protocol.Request(
+            "config.set",
+            {"path": "plugins.hello", "value": {"plugin": "text", "enabled": True}},
+        )
+    )
+
+    assert response.ok
+    assert runner.config_data["plugins"]["hello"]["plugin"] == "text"
+
+
+def test_config_set_outside_plugins_is_unaffected_by_the_guard(tmp_path: Path) -> None:
+    loader = PluginLoader(builtins={}, home=tmp_path / "plugins")
+    runner = _StubRunner(loader=loader)
+    dispatch = make_dispatch(runner)
+
+    response = dispatch(protocol.Request("config.set", {"path": "display.fps", "value": 20}))
+
+    assert response.ok
+    assert runner.config_data["display"]["fps"] == 20
+
+
+def test_config_set_plugins_is_permissive_without_a_loader() -> None:
+    # Mirrors plugin.instance.add: with no loader there is nothing to validate
+    # against, so the write is attempted (a stub or detached runner has no
+    # discovery to consult).
+    runner = _StubRunner()  # loader is None
+    dispatch = make_dispatch(runner)
+
+    response = dispatch(
+        protocol.Request(
+            "config.set", {"path": "plugins.dead", "value": {"plugin": "no-such-plugin"}}
+        )
+    )
+
+    assert response.ok
+    assert runner.config_data["plugins"]["dead"]["plugin"] == "no-such-plugin"
 
 
 # --------------------------------------------------------------- F4: logs.tail
