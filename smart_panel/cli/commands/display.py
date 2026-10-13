@@ -1,8 +1,10 @@
 """Display controls: brightness, layout and preview (T057).
 
-``brightness set N`` is 0-100; ``0`` turns the backlight off. ``layout`` reads
-and edits the live layout, and ``preview`` renders the composed canvas to a PNG
-with no panel attached (so a headless host can still check what would be shown).
+``brightness set N`` is documented as 1-100 (FR-011); ``0`` is still accepted for
+backwards compatibility, but it only changes the backlight level -- it does not
+turn the backlight off (hardware tests T129/T130: the panel stays lit). ``layout``
+reads and edits the live layout, and ``preview`` renders the composed canvas to a
+PNG with no panel attached (so a headless host can still check what would be shown).
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ HANDLERS: dict[tuple[str, ...], Any] = {}
 
 
 def cmd_brightness_set(ctx: CliContext, tokens: list[str]) -> dict[str, Any]:
-    """Set the backlight brightness (0-100; 0 turns the backlight off)."""
+    """Set the backlight brightness (1-100; ``0`` accepted but not "off" -- level only)."""
     positionals, _opts = parse_options(tokens)
     (raw,) = require_args(positionals, 1, "smart-panel brightness set N")
     try:

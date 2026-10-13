@@ -68,7 +68,7 @@ The bootstrap PR that introduced the spec, plan, tasks and these docs has no CI 
 - `main` will be protected (constitution, Contribution Workflow): pull request required, CI checks required, no force pushes, applied to administrators. T133 applies the protection after the first green CI run; until then it is not enforced by the platform, so still use pull requests for every change and never push to `main`.
 - Commits and PRs carry the attribution lines the session provides.
 - Every `dev.write` keeps the `b"\x00"` prefix and stays inside `panel_driver/device.py`.
-- No byte sequence the vendor capture does not show may run on a default path. Brightness `0` is unverified until T129 reports.
+- No byte sequence the vendor capture does not show may run on a default path. Brightness `0` changes the backlight level only and does not blank the panel (verified T129, 2026-10-09); FR-011 documents the range as 1–100.
 - Protocol facts must be traceable to the capture or a recorded hardware test. Update `handoff/panel_protocol_handoff.md` in the same PR as any change to `protocol.py` or `device.py`.
 - `panel_driver` depends only on `hid` and `Pillow`. `psutil` and `defusedxml` belong to the `app` extra and are imported only from `smart_panel`.
 - Built-in plugins import only from `smart_panel.sdk`; `tests/contract/test_builtin_imports.py` enforces this.
