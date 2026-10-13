@@ -28,7 +28,7 @@ All use `--sink files --files-dir "$SMART_PANEL_HOME/frames"`; the latest compos
 smart-panel --json start --sink files --files-dir "$SMART_PANEL_HOME/frames"
 smart-panel --json status                       # state: running, plugins ok, panel.sink: files
 smart-panel plugin instance add hello --plugin text --set text=Hello
-smart-panel layout region set main --instance hello      # temporarily show it in the main region
+smart-panel layout region set main --x 0 --y 0 --w 1920 --h 462 --instance hello   # a new region needs --x --y --w --h; show it in main
 smart-panel preview --output /tmp/a.png         # shows "Hello" in under 5 s
 smart-panel --json start                        # exit code 6: already running
 smart-panel config set display.fps 500 ; echo $?   # exit 2, names display.fps, running config unchanged
