@@ -211,23 +211,47 @@ def test_adding_an_instance_for_a_discovered_plugin_is_accepted(tmp_path: Path) 
 
 def test_adding_an_instance_runs_the_guard_before_coercing_settings(tmp_path: Path) -> None:
     # FR-006 ordering: the plugin guard runs BEFORE the settings are coerced.
-    # ``["not-a-pair"]`` cannot be coerced to a dict (ValueError), so if the
-    # guard ran after ``dict(args.get("settings") or {})`` this would surface as
+    # Two dispatches share the same malformed ``settings`` (``["not-a-pair"]``,
+    # which ``dict(...)`` cannot consume) and differ only in whether the loader
+    # knows the plugin. Pinning *both* outcomes is what makes the ordering
+    # observable: with the guard first the unknown plugin is refused by the guard
+    # (outcome 1); were the guard after ``dict(args.get("settings") or {})``, that
+    # same dispatch would collapse into the coercion's outcome (2) and report
     # ``internal`` (exit 1) instead of the actionable ``invalid_input`` (exit 2).
-    loader = PluginLoader(builtins={}, home=tmp_path / "plugins")
+    loader = PluginLoader(builtins={"text": _TinyRegionPlugin}, home=tmp_path / "plugins")
     runner = _StubRunner(loader=loader)
     dispatch = make_dispatch(runner)
+    malformed = ["not-a-pair"]
 
-    with pytest.raises(protocol.ProtocolError) as excinfo:
+    # Outcome 1 -- unknown plugin: the guard's verdict, naming the setting and the
+    # offending plugin, with nothing persisted.
+    with pytest.raises(protocol.ProtocolError) as guard:
         dispatch(
             protocol.Request(
                 "plugin.instance.add",
-                {"name": "dead", "plugin": "no-such-plugin", "settings": ["not-a-pair"]},
+                {"name": "dead", "plugin": "no-such-plugin", "settings": malformed},
             )
         )
+    assert guard.value.code == "invalid_input"
+    assert guard.value.setting == "plugins.dead.plugin"
+    assert "no-such-plugin" in guard.value.message
+    assert runner.config_data["plugins"] == {}
 
-    assert excinfo.value.code == "invalid_input"
-    assert excinfo.value.setting == "plugins.dead.plugin"
+    # Outcome 2 -- a plugin the loader knows, same malformed settings: the guard
+    # passes, so the coercion is what fails. The outcome is the coercion's, not the
+    # guard's: ``internal`` (exit 1), because the malformed ``settings`` type is
+    # not (yet) mapped to ``invalid_input`` the way the F3 validators are. This
+    # contrast is what pins the ordering; the mismatch itself is recorded as a
+    # followup, not "fixed" here (this card is a test-only change).
+    with pytest.raises(protocol.ProtocolError) as coerced:
+        dispatch(
+            protocol.Request(
+                "plugin.instance.add",
+                {"name": "ok", "plugin": "text", "settings": malformed},
+            )
+        )
+    assert coerced.value.code == "internal"
+    assert coerced.value.setting is None
     assert runner.config_data["plugins"] == {}
 
 
