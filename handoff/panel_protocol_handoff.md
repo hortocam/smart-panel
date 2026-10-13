@@ -155,6 +155,46 @@ panel, the brightness lower bound becomes **1** and **FR-011 is amended** away f
 backlight level, not an error) but is no longer documented as "off".
 
 
+### MVP runner on the real panel — measured 2026-10-12 (T130)
+
+First sustained run of the **MVP runner** (the `smart_panel` application layer with
+`HidSink`, not just the Phase 1 `scripts/stream.py`) against the physical panel.
+Hardware: Raspberry Pi 4 Model B Rev 1.2, Debian 13 (trixie), kernel
+`6.18.34+rpt-rpi-v8`, aarch64. Panel: USB `5548:1011` `HOTSPOTEKUSB … HID DEMO` on
+`/dev/hidraw0`; sink `hid`; canvas 1920x462; JPEG quality 70; target 15 fps. Code
+under test: `main` `10fb910` ("Merge pull request #34 from
+hortocam/wt/p3-text-empty-blank"), installed on the Pi with
+`.venv/bin/pip install -e ".[dev]"`.
+
+The run started 2026-10-12 20:22:10 ET and was still up at 20:32:24 ET — uptime
+**613 s** (> 10 min), **9,189 frames** sent, **15.0 fps** against the 15 fps target,
+and `governor_level 0`, with no log errors beyond the startup
+`first_frame_without_content` warning. The owner confirmed "T130-smoke" was visible
+on the physical panel. Summary of what was actually observed:
+
+| T130 step | What was done | Observed result |
+|---|---|---|
+| >=10 min with a `text` instance | `smart-panel start` (hid sink), `plugin instance add hello --plugin text --set text=T130-smoke`, bound via `layout region set main --x 0 --y 0 --w 1920 --h 462 --instance hello` | 613 s continuous, 9,189 frames, panel connected throughout except the replug below, fps 15.0 against a 15 fps target. Owner confirmed "T130-smoke" was visible on the panel. |
+| change config live | the region binding at 20:22:47, then `plugin instance set hello text="T130 LIVE CHANGE"` at 20:25:20 | both `applied: true` with the runner up, no restart; frame bytes 18171 -> 20209; the composed frame was read back and reads "T130 LIVE CHANGE" (sha256 `6df947ae…`). |
+| unplug + replug | owner unplugged the panel USB | unplug detected 20:26:31; the runner stayed up and kept composing (frame counter never stopped); device back on the bus 20:26:40; `panel_connected` 20:26:47 — **7 s**; `reconnects` 0 -> 1; fps unchanged. SC-007 satisfied. |
+| brightness 0/50/100 | `brightness set` 0 at 20:23:02, 50 at 20:24:46, 100 at 20:24:57 | all `applied: true`, `brightness get` read back 0/50/100. Owner-observed: `0` — the backlight does not turn off; the panel **stayed lit and kept rendering** (matches T129, re-confirms the FR-011 amendment); `50` — normal; `100` — visibly brighter. |
+
+Raw log excerpt (unplug/replug):
+
+```
+20:26:31 panel=disconnected  err=unable to open device: ioctl(GRDESCSIZE) error for '/dev/hidraw0', not a HIDRAW device?: No such device
+20:26:40 panel=disconnected  (USB device back on the bus)
+20:26:47 panel=connected     reconnects=1
+```
+
+Event log across the whole run: `warning first_frame_without_content` (startup —
+expected, nothing had drawn yet), `warning panel_reopen`, `info panel_connected`.
+
+**Brightness `0` re-confirmed T129 on 2026-10-12: the panel stays lit and keeps
+rendering.** `0` changes the backlight level but does not turn it off, so the lower
+bound T129 set (1) and the FR-011 amendment it drove stand unchanged.
+
+
 ### Init sequence (required before first frame)
 
 A second capture (fullpaneltest.pcapng) revealed two mandatory init commands
