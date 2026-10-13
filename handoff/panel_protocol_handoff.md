@@ -242,10 +242,14 @@ table above and open item 2): they are reproduced as the observed constant
 (`b1 00` for CRTDRA, `00 00` for CRTDIS/CRTLIG), not treated as a decoded or
 load-bearing field.
 
-Brightness `0` is documented as "backlight off" but remains **unverified on
-hardware** until the T129 smoke test records its observed effect; if `0` proves
-unsafe or does not blank the panel, the lower bound becomes 1 and FR-011 is
-amended.
+Brightness `0` is still accepted (a valid backlight level, kept for backwards
+compatibility) but it is **not** a "backlight off" state: the T129 hardware sweep
+recorded on the Raspberry Pi 4B (2026-10-09; see "Brightness sweep (T129
+requirement)" above) measured that `0` only changes the backlight level — the
+panel stays lit — and the T130 close-out (2026-10-12) re-confirmed it. The
+documented range therefore starts at **1**, and FR-011 is amended accordingly
+(see the amendment recorded against FR-011 in
+`specs/001-status-display-platform/spec.md`).
 
 ### macOS hidapi report ID quirk (empirically discovered)
 
