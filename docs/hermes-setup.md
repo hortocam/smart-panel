@@ -58,7 +58,7 @@ Hardware agent to orchestrator: the same `card` and `task`, plus `status` (`pass
 ## Safety rules for the hardware agent
 
 - Run only the commands in the job. Do not craft device commands or byte sequences by hand.
-- Brightness `0` is unverified until T129 reports. Run it only when a job asks, and report what the panel did.
+- Brightness `0` is verified (T129, 2026-10-09): it changes the backlight level but does not blank the panel — the display stays lit. Run it only when a job asks, and report what the panel did.
 - If the panel stops responding, stop all jobs, report `blocked`, and ask a person to power-cycle it.
 - Never write to or read from the panel with other tools while a runner is active (one runner per panel).
 - Keep secrets out of logs. Soak logs must pass the redaction checks before they are shared.
