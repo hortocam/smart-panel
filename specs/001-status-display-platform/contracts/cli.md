@@ -48,7 +48,7 @@ Push commands that were spooled return `{"ok": true, "data": {"saved_for_later":
 
 `error.code` strings match the names above plus `not_found` (exit 2), `spool_full` (exit 1), `timeout` (exit 1), and `protocol_mismatch` (exit 1).
 
-A malformed argument is `invalid_input` (exit 2), and FR-006 requires the message to identify the setting. This includes a `settings` value whose **type** the command cannot consume — anything that is not an object where the whole-instance `settings` argument is required, such as a list or a bare string — which is a validation failure, never an internal error. `plugin instance add` reports it as `invalid_input` with `setting` set to `plugins.<name>.settings`.
+A malformed argument is `invalid_input` (exit 2), and FR-006 requires the message to identify the setting. This includes a `settings` value whose **type** the command cannot consume — anything that is not an object where the whole-instance `settings` argument is required, such as a bare string or an int — which is a validation failure, never an internal error. `plugin instance add` reports it as `invalid_input` with `setting` set to `plugins.<name>.settings`; its one pre-existing exception is a list of two-element pairs, which the `dict()` coercion consumes (`[["a", "b"]]` applies as `{"a": "b"}`). `plugin instance set` rejects a non-object `settings` the same way, but its `invalid_input` carries no `setting` key.
 
 ### Streaming commands
 

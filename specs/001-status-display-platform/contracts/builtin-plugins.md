@@ -1,6 +1,6 @@
 # Contract: Built-in Plugins
 
-Settings and commands for the plugins that ship with the project. All of them use only [`smart_panel.sdk`](plugin-sdk.md). Setting types and ranges are enforced at validation time (FR-006). A settings value whose type the command cannot consume — anything that is not an object for the whole-instance `settings` argument, such as a list or a bare string — is rejected as `invalid_input` (exit 2); `plugin instance add` names the offending key (`plugins.<name>.settings`). Colors accept `#RRGGBB` or `#RRGGBBAA`.
+Settings and commands for the plugins that ship with the project. All of them use only [`smart_panel.sdk`](plugin-sdk.md). Setting types and ranges are enforced at validation time (FR-006). A settings value whose type the command cannot consume is rejected as `invalid_input` (exit 2); `plugin instance add` names the offending key (`plugins.<name>.settings`). For the whole-instance `settings` argument the required type is an object — a bare string or an int is rejected — with one pre-existing exception: a list of two-element pairs is still coerced, because the mapping is built with `dict()`, which consumes it (`[["a", "b"]]` applies as `{"a": "b"}`). Colors accept `#RRGGBB` or `#RRGGBBAA`.
 
 ## `text` (region)
 
