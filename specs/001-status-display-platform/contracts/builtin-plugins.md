@@ -14,7 +14,7 @@ Static text, used for first-run verification (US1) and as the reference sample p
 | `size` | int | 48 | >= `min_text_px` |
 | `align` | enum | `center` | `left`, `center`, `right` |
 
-Commands: `set --text T` (spoolable). An empty `T` is valid and pinned: it sets the field to no text, and the region renders a background-only frame — the composed canvas keeps its size and carries no ink. This is the only way to blank a text region, the plugin having no `clear` verb. It differs deliberately from the `alerts` `push` rejection of an empty `message` below: a notification must communicate something, whereas a display field may legitimately carry nothing. `set --text ""` is therefore neither refused nor clamped/substituted.
+Commands: `set --text T` (spoolable). An empty `T` is valid and pinned: it sets the field to no text, and the region renders a background-only frame — the composed canvas keeps its size and carries no text ink (the region's own `bg` still fills it, so an empty frame paints the background, not necessarily the default black). This is the only way to blank a text region, the plugin having no `clear` verb. It differs deliberately from the `alerts` `push` rejection of an empty `message` below: a notification must communicate something, whereas a display field may legitimately carry nothing. `set --text ""` is therefore neither refused nor clamped/substituted.
 
 ## `alerts` (overlay on `main`)
 
