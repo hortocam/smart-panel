@@ -36,7 +36,7 @@ smart-panel restart && smart-panel --json status   # running again, first frame 
 smart-panel stop
 ```
 
-Expected: exit codes 0, 0, 0, 0, 6, 2, 0, 0; every command's `--json` output has the envelope; `status` lists each plugin's health.
+Expected: exit codes 0, 0, 0, 0, 0, 6, 2, 0, 0; every command's `--json` output has the envelope; `status` lists each plugin's health.
 
 ### B. Alerts (US2; FR-017 to FR-024; SC-002)
 
