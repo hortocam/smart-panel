@@ -106,7 +106,7 @@ Its exit codes are pinned:
 
 | Command | Behavior |
 |---|---|
-| `brightness set N` | 0-100 (FR-011); `0` turns the backlight off. Applied immediately and persisted |
+| `brightness set N` | 1-100 (FR-011); `0` is still accepted but only changes the backlight level — it is not "off". Applied immediately and persisted |
 | `brightness get` | |
 | `layout show` | |
 | `layout set --file F` or `layout region set NAME --x --y --w --h --instance I` | Replace or edit regions |
