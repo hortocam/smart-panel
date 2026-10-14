@@ -22,7 +22,9 @@ pipeline are exercised end to end on a host with no panel attached:
 * a **silent** runner (``SIGSTOP``ped, so the socket accepts and the hello goes
   unanswered) is not reported as ``runner_not_running``: ``status`` is exit 1
   ``timeout`` and a second ``start`` is exit 6 ``conflict`` rather than a
-  detached child quietly dying on the lock the frozen runner still holds;
+  detached child quietly dying on the lock the frozen runner still holds; a
+  ``logs --follow`` against the same frozen runner is exit 1 ``timeout`` too,
+  not exit 3;
 * a ``start`` whose detached child dies (here: the lock is held, so the child
   exits 6) reports the child — the conflict code and the child's own stderr —
   instead of a bare "no first frame" timeout;
@@ -482,6 +484,37 @@ def test_a_silent_runner_is_not_reported_as_gone(host: CliHost) -> None:
         second, proc = host.data("--json", "--timeout", "2", "start")
         assert proc.returncode == 6, second
         assert second["error"]["code"] == "conflict", second
+    finally:
+        os.kill(pid, signal.SIGCONT)
+
+    proc = host.stop()
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_a_follow_of_a_silent_runner_is_not_reported_as_gone(host: CliHost) -> None:
+    """``logs --follow`` against a frozen runner exits 1 ``timeout``, not 3.
+
+    The same ``SIGSTOP``ped runner as above: ``runner.pid`` still names a live
+    process and the listening socket still accepts, so the follow's connect
+    succeeds and its hello handshake goes unanswered. ``--timeout`` bounds the
+    connect and handshake, so the follow must report the documented ``timeout``
+    code (exit 1) — "the runner did not answer" — rather than
+    ``runner_not_running`` (exit 3), which claims there is no runner while a
+    live one holds the single-instance lock. This is the streaming path's last
+    conflation of the two "no answer" shapes.
+    """
+    _require_started(host)
+    pid_file = host.runtime / "runner.pid"
+    pid = int(pid_file.read_text(encoding="utf-8").strip())
+    os.kill(pid, signal.SIGSTOP)
+    try:
+        # The frozen pid is still live: this is not "no runner".
+        os.kill(pid, 0)
+        proc = host.cli("--json", "--timeout", "2", "logs", "--follow")
+        assert proc.returncode == protocol.EXIT_CODES["timeout"] == 1, proc.stdout + proc.stderr
+        payload = json.loads(proc.stdout.splitlines()[0])
+        assert payload["error"]["code"] == "timeout", payload
+        assert "did not answer" in payload["error"]["message"]
     finally:
         os.kill(pid, signal.SIGCONT)
 
