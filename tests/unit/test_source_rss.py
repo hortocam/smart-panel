@@ -88,6 +88,14 @@ def test_max_items_defaults_to_30_and_caps_the_returned_titles() -> None:
 
 def test_entity_expansion_and_dtd_are_rejected() -> None:
     """A feed must not be able to expand entities or declare a DTD (defusedxml)."""
+    bare_dtd = (
+        b'<?xml version="1.0"?><!DOCTYPE rss []>'
+        b'<rss version="2.0"><channel><item><title>Plain title</title></item></channel></rss>'
+    )
+    with pytest.raises(SourceError) as dtd_excinfo:
+        parse_feed(bare_dtd)
+    assert "DTD" in str(dtd_excinfo.value)
+
     dtd_entity = (
         b'<?xml version="1.0"?><!DOCTYPE rss [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
         b'<rss version="2.0"><channel><item><title>&xxe;</title></item></channel></rss>'

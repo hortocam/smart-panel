@@ -128,7 +128,7 @@ def parse_feed(data: bytes | str, max_items: int = MAX_ITEMS_DEFAULT) -> list[st
         raise SourceError("max_items must be at least 1")
     element_tree = _defused_element_tree()
     try:
-        root = element_tree.fromstring(payload)
+        root = element_tree.fromstring(payload, forbid_dtd=True)
     except ValueError as exc:  # DefusedXmlException is a ValueError
         raise SourceError(
             "the feed declares a DTD or entity expansions, which are refused"

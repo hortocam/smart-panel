@@ -332,7 +332,7 @@ def parse_feed_titles(body: bytes | str, max_items: int = MAX_ITEMS_DEFAULT) -> 
     payload = body.encode("utf-8") if isinstance(body, str) else bytes(body)
     element_tree = _defused_element_tree()
     try:
-        root = element_tree.fromstring(payload)
+        root = element_tree.fromstring(payload, forbid_dtd=True)
     except ValueError as exc:  # DefusedXmlException is a ValueError
         raise CrawlValidationError(
             "the feed declares a DTD or entity expansions, which are refused"

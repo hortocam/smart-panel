@@ -23,7 +23,9 @@ from smart_panel.plugins.crawl.model import (
     DEFAULT_SEPARATOR,
     MAX_ITEM_CHARS,
     CrawlItem,
+    CrawlValidationError,
     order_items,
+    parse_feed_titles,
     truncate_item,
 )
 from smart_panel.plugins.crawl.render import CrawlRenderer
@@ -104,19 +106,46 @@ def test_the_loop_is_seamless() -> None:
     assert list(first.getdata()) == list(second.getdata())
 
 
-def test_direction_left_and_right_are_mirror_images() -> None:
-    """A ``right`` crawl is the ``left`` one mirrored within each strip period."""
-    texts = ["Alpha headline", "Beta headline"]
+def test_direction_right_scrolls_rightward_with_unmirrored_text() -> None:
+    """``direction=right`` scrolls the strip rightward, and the glyphs stay readable.
+
+    FR-026: both directions scroll the *same* pre-rendered strip, so at a matching
+    phase the two frames are pixel-identical (not a mirror image, which would read
+    backwards). Half a second later each has travelled ``speed * dt`` px — rightward
+    for ``right``, leftward for ``left``.
+    """
+    texts = [
+        "Supercalifragilistic headline that is far wider than the crawl region "
+        "and keeps going for a while after that"
+    ]
+    speed = 140
+    shift = speed // 2  # half a second of travel
     clock = FakeClock(start=0.0)
     left_renderer = CrawlRenderer()
     right_renderer = CrawlRenderer()
-    left = left_renderer.render(_frame(clock), texts, _settings(direction="left"))
-    right = right_renderer.render(_frame(clock), texts, _settings(direction="right"))
+    left_first = left_renderer.render(_frame(clock), texts, _settings(direction="left"))
+    right_first = right_renderer.render(_frame(clock), texts, _settings(direction="right"))
     width = left_renderer.strip_width
     assert width == right_renderer.strip_width
-    for x in (0, 40, width - 1, width + 7):
-        for y in (0, 20, REGION[1] - 1):
-            assert right.getpixel((x, y)) == left.getpixel(((width - 1 - x) % width, y))
+    assert width > REGION[0] + shift, "the strip must be wider than the window plus travel"
+
+    row = REGION[1] // 2
+    for x in range(0, REGION[0], 11):
+        assert right_first.getpixel((x, row)) == left_first.getpixel((x, row)), (
+            "direction=right must scroll the same readable glyphs, not a mirror image"
+        )
+
+    clock.advance(0.5)
+    left_second = left_renderer.render(_frame(clock), texts, _settings(direction="left"))
+    right_second = right_renderer.render(_frame(clock), texts, _settings(direction="right"))
+    for x in range(shift, REGION[0], 11):
+        assert right_second.getpixel((x, row)) == right_first.getpixel((x - shift, row)), (
+            "direction=right must move the strip rightward by speed * dt"
+        )
+    for x in range(0, REGION[0] - shift, 11):
+        assert left_second.getpixel((x, row)) == left_first.getpixel((x + shift, row)), (
+            "direction=left must keep moving the strip leftward by speed * dt"
+        )
 
 
 def test_speed_moves_the_strip_further_in_the_same_time() -> None:
@@ -174,6 +203,34 @@ def test_a_dropped_item_set_is_still_rendered_with_ink() -> None:
     clock = FakeClock(start=0.0)
     image = renderer.render(_frame(clock), ["Alpha"], _settings())
     assert _ink(image) > 0
+
+
+# ------------------------------------------------- feeds refused (defusedxml)
+
+
+def test_crawl_feed_parsing_refuses_a_dtd_and_entity_expansion() -> None:
+    """A crawl RSS source must refuse any DTD (even a bare one) and entity use (T085)."""
+    bare_dtd = (
+        b'<?xml version="1.0"?><!DOCTYPE rss []>'
+        b'<rss version="2.0"><channel><item><title>Plain title</title></item></channel></rss>'
+    )
+    with pytest.raises(CrawlValidationError) as excinfo:
+        parse_feed_titles(bare_dtd)
+    assert "DTD" in str(excinfo.value)
+
+    expansion = (
+        b'<?xml version="1.0"?><!DOCTYPE rss ['
+        b'<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">]>'
+        b'<rss version="2.0"><channel><item><title>&b;</title></item></channel></rss>'
+    )
+    with pytest.raises(CrawlValidationError):
+        parse_feed_titles(expansion)
+
+    well_formed = (
+        b'<?xml version="1.0"?><rss version="2.0"><channel>'
+        b"<item><title>Fine</title></item></channel></rss>"
+    )
+    assert parse_feed_titles(well_formed) == ["Fine"]
 
 
 # ------------------------------------------------------------------- ordering

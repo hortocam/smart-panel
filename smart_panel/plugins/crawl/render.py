@@ -167,7 +167,7 @@ class CrawlRenderer:
 
         key = (tuple(clean), size_px, font_name, separator, direction, fg, bg)
         if self._key != key:
-            strip, strip_width = self._build(clean, separator, font, fg, direction)
+            strip, strip_width = self._build(clean, separator, font, fg)
             if self._strip is None:
                 self._adopt(key, strip, strip_width, speed, float(frame.now))
             else:
@@ -185,12 +185,17 @@ class CrawlRenderer:
         strip = self._strip
         assert strip is not None  # adopted above
         canvas = PILImage.new("RGBA", (width, height), bg)
-        offset = ((float(frame.now) - self._epoch) * self._speed) % max(1, self._width)
+        step = max(1, self._width)
+        offset = ((float(frame.now) - self._epoch) * self._speed) % step
         y = max(0, (height - strip.height) // 2)
-        x = -offset
+        # ``left`` scrolls the strip out to the left (paste from ``-offset``); ``right``
+        # scrolls it out to the right (paste from ``offset - step``). Both tile by
+        # ``step``, so the loop is seamless in either direction and the strip itself
+        # is never mirrored (FR-026: the text stays readable).
+        x = offset - step if direction == "right" else -offset
         while x < width:
             canvas.paste(strip, (int(x), int(y)), strip)
-            x += max(1, self._width)
+            x += step
         return canvas
 
     # -------------------------------------------------------------- internals
@@ -223,7 +228,6 @@ class CrawlRenderer:
         separator: str,
         font: Any,
         fg: tuple[int, int, int, int],
-        direction: str,
     ) -> tuple[PILImage.Image, int]:
         """Pre-render ``texts`` (joined by ``separator``) into one strip."""
         line = separator.join(texts) + separator
@@ -233,8 +237,6 @@ class CrawlRenderer:
         height = max(1, int(ascent + descent))
         strip = PILImage.new("RGBA", (strip_width, height), (0, 0, 0, 0))
         ImageDraw.Draw(strip).text((0, 0), line, font=font, fill=fg)
-        if str(direction) == "right":
-            strip = strip.transpose(PILImage.FLIP_LEFT_RIGHT)
         return strip, strip_width
 
     def _static(
