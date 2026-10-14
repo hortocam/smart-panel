@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+  <channel>
+    <title>TECHNOLOGY - Google News</title>
+    <link>https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&amp;gl=US&amp;ceid=US:en</link>
+    <description>Google News</description>
+    <language>en-US</language>
+    <lastBuildDate>Wed, 08 Oct 2025 20:15:00 GMT</lastBuildDate>
+    <item>
+      <title>Rocket Lab launches its 50th Electron mission - Example Wire</title>
+      <link>https://example.com/rocket-lab-50</link>
+      <guid isPermaLink="false">CBMiR0h0dHBzOi8vZXhhbXBsZS5jb20vcm9ja2V0LWxhYi01MA</guid>
+      <pubDate>Wed, 08 Oct 2025 19:02:00 GMT</pubDate>
+      <description>&lt;a href="https://example.com/rocket-lab-50"&gt;Rocket Lab&lt;/a&gt;</description>
+      <source url="https://example.com">Example Wire</source>
+    </item>
+    <item>
+      <title>AT&amp;T says network investment will rise next year - Datacenter News</title>
+      <link>https://example.com/att-capex</link>
+      <guid isPermaLink="false">CBMiR0h0dHBzOi8vZXhhbXBsZS5jb20vYXR0LWNhcGV4</guid>
+      <pubDate>Wed, 08 Oct 2025 18:40:00 GMT</pubDate>
+      <description>&lt;a href="https://example.com/att-capex"&gt;AT&amp;amp;T&lt;/a&gt;</description>
+      <source url="https://example.com">Datacenter News</source>
+    </item>
+    <item>
+      <title>Chipmaker opens a second packaging plant - Silicon Desk</title>
+      <link>https://example.com/second-plant</link>
+      <guid isPermaLink="false">CBMiR0h0dHBzOi8vZXhhbXBsZS5jb20vc2Vjb25kLXBsYW50</guid>
+      <pubDate>Wed, 08 Oct 2025 18:05:00 GMT</pubDate>
+      <description>&lt;a href="https://example.com/second-plant"&gt;Chipmaker&lt;/a&gt;</description>
+      <source url="https://example.com">Silicon Desk</source>
+    </item>
+    <item>
+      <title>Open source maintainers publish a joint funding pledge - Example Wire</title>
+      <link>https://example.com/oss-funding</link>
+      <guid isPermaLink="false">CBMiR0h0dHBzOi8vZXhhbXBsZS5jb20vb3NzLWZ1bmRpbmc</guid>
+      <pubDate>Wed, 08 Oct 2025 17:31:00 GMT</pubDate>
+      <description>&lt;a href="https://example.com/oss-funding"&gt;Open source&lt;/a&gt;</description>
+      <source url="https://example.com">Example Wire</source>
+    </item>
+    <item>
+      <title>Battery startup reports a 900 Wh/kg pouch cell - Datacenter News</title>
+      <link>https://example.com/900-wh-kg</link>
+      <guid isPermaLink="false">CBMiR0h0dHBzOi8vZXhhbXBsZS5jb20vOTAwLXdoLWtn</guid>
+      <pubDate>Wed, 08 Oct 2025 16:58:00 GMT</pubDate>
+      <description>&lt;a href="https://example.com/900-wh-kg"&gt;Battery&lt;/a&gt;</description>
+      <source url="https://example.com">Datacenter News</source>
+    </item>
+  </channel>
+</rss>

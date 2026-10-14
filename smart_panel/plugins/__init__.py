@@ -17,12 +17,16 @@ from __future__ import annotations
 from typing import Any
 
 from smart_panel.plugins.alerts import AlertsPlugin
+from smart_panel.plugins.crawl import CrawlPlugin
+from smart_panel.plugins.sources import SourcesPlugin
 from smart_panel.plugins.text import TextPlugin
 from smart_panel.sdk.plugin import Plugin
 
 BUILTIN_PLUGINS: dict[str, type[Plugin]] = {
     TextPlugin.manifest.name: TextPlugin,
     AlertsPlugin.manifest.name: AlertsPlugin,
+    CrawlPlugin.manifest.name: CrawlPlugin,
+    SourcesPlugin.manifest.name: SourcesPlugin,
 }
 
 
@@ -32,7 +36,11 @@ def builtin_plugins() -> dict[str, type[Plugin]]:
 
 
 def builtin_instances() -> dict[str, dict[str, Any]]:
-    """One default instance per registered built-in, for the default config."""
+    """One default instance per registered built-in, for the default config.
+
+    ``crawl`` gets the ticker defaults; ``sources`` starts with an empty source
+    table, so a fresh install validates with no endpoints configured.
+    """
     return {
         name: {"plugin": name, "enabled": True, "settings": {}}
         for name in sorted(BUILTIN_PLUGINS)
@@ -42,6 +50,8 @@ def builtin_instances() -> dict[str, dict[str, Any]]:
 __all__ = [
     "BUILTIN_PLUGINS",
     "AlertsPlugin",
+    "CrawlPlugin",
+    "SourcesPlugin",
     "TextPlugin",
     "builtin_instances",
     "builtin_plugins",

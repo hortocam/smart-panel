@@ -218,25 +218,48 @@ def _run_verb(ctx: CliContext, spec: dict[str, Any], tokens: list[str]) -> dict[
     value_opts = {arg["name"]: _arg_converter(arg) for arg in declared if arg.get("type") != "bool"}
     positionals, opts = parse_options(tokens, value_opts=value_opts, bool_opts=flags)
     values = [arg for arg in declared if arg.get("type") != "bool"]
-    if len(positionals) > len(values):
-        raise UsageError(f"too many arguments for {spec.get('verb')!r}")
     args: dict[str, Any] = {
         arg["name"]: True
         for arg in declared
         if arg.get("type") == "bool" and arg["name"].replace("-", "_") in opts
     }
-    for index, arg in enumerate(values):
+    cursor = 0
+    list_arg: str | None = None
+    for arg in values:
         name = arg["name"]
         key = name.replace("-", "_")
         if key in opts:
             args[name] = opts[key]
-        elif index < len(positionals):
-            args[name] = _coerce(arg, positionals[index])
+            continue
+        if arg.get("type") == "list":
+            # A list argument is the varargs of the verb (``crawl items set ITEM...``):
+            # it takes every remaining positional word as one element.
+            list_arg = name
+            remainder = positionals[cursor:]
+            if remainder:
+                args[name] = list(remainder)
+                cursor = len(positionals)
+            continue
+        if cursor < len(positionals):
+            args[name] = _coerce(arg, positionals[cursor])
+            cursor += 1
+    if cursor < len(positionals):
+        raise UsageError(f"too many arguments for {spec.get('verb')!r}")
+    if list_arg is not None and opts.get("stdin"):
+        # ``--stdin`` is read here, in the CLI process: the runner's own standard
+        # input is not the caller's (``crawl items set --stdin``, one item per line).
+        args[list_arg] = _stdin_items()
+        args.pop("stdin", None)
     return ctx.call(
         "plugin.call",
         {"instance": spec["instance"], "verb": spec["verb"], "args": args},
         spoolable=bool(spec.get("spoolable")),
     )
+
+
+def _stdin_items() -> list[str]:
+    """One item per non-empty line from standard input."""
+    return [line.rstrip("\n") for line in sys.stdin if line.strip()]
 
 
 def _arg_converter(arg: dict[str, Any]) -> Any:

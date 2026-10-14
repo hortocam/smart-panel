@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "description": "Shipped crawl source presets. Plain configuration (contracts/builtin-plugins.md), so a mapping can be corrected without a code release.",
+  "presets": {
+    "espn-nfl": {
+      "kind": "json",
+      "label": "NFL",
+      "url": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard",
+      "list_path": "events",
+      "template": "{competitions.0.competitors.1.team.abbreviation} {competitions.0.competitors.1.score} @ {competitions.0.competitors.0.team.abbreviation} {competitions.0.competitors.0.score} - {status.type.shortDetail}",
+      "interval_s": 60,
+      "max_items": 30
+    },
+    "espn-nba": {
+      "kind": "json",
+      "label": "NBA",
+      "url": "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
+      "list_path": "events",
+      "template": "{competitions.0.competitors.1.team.abbreviation} {competitions.0.competitors.1.score} @ {competitions.0.competitors.0.team.abbreviation} {competitions.0.competitors.0.score} - {status.type.shortDetail}",
+      "interval_s": 60,
+      "max_items": 30
+    },
+    "espn-mlb": {
+      "kind": "json",
+      "label": "MLB",
+      "url": "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard",
+      "list_path": "events",
+      "template": "{competitions.0.competitors.1.team.abbreviation} {competitions.0.competitors.1.score} @ {competitions.0.competitors.0.team.abbreviation} {competitions.0.competitors.0.score} - {status.type.shortDetail}",
+      "interval_s": 60,
+      "max_items": 30
+    },
+    "espn-nhl": {
+      "kind": "json",
+      "label": "NHL",
+      "url": "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard",
+      "list_path": "events",
+      "template": "{competitions.0.competitors.1.team.abbreviation} {competitions.0.competitors.1.score} @ {competitions.0.competitors.0.team.abbreviation} {competitions.0.competitors.0.score} - {status.type.shortDetail}",
+      "interval_s": 60,
+      "max_items": 30
+    },
+    "espn-epl": {
+      "kind": "json",
+      "label": "Premier League",
+      "url": "https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard",
+      "list_path": "events",
+      "template": "{competitions.0.competitors.1.team.abbreviation} {competitions.0.competitors.1.score} @ {competitions.0.competitors.0.team.abbreviation} {competitions.0.competitors.0.score} - {status.type.shortDetail}",
+      "interval_s": 60,
+      "max_items": 30
+    },
+    "espn-ncaaf": {
+      "kind": "json",
+      "label": "College Football",
+      "url": "https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard",
+      "list_path": "events",
+      "template": "{competitions.0.competitors.1.team.abbreviation} {competitions.0.competitors.1.score} @ {competitions.0.competitors.0.team.abbreviation} {competitions.0.competitors.0.score} - {status.type.shortDetail}",
+      "interval_s": 60,
+      "max_items": 30
+    },
+    "google-news-search": {
+      "kind": "rss",
+      "label": "Google News",
+      "url": "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en",
+      "interval_s": 300,
+      "max_items": 30
+    },
+    "google-news-topic": {
+      "kind": "rss",
+      "label": "Google News",
+      "url": "https://news.google.com/rss/headlines/section/topic/{topic}?hl=en-US&gl=US&ceid=US:en",
+      "interval_s": 300,
+      "max_items": 30
+    }
+  }
+}

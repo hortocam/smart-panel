@@ -86,9 +86,11 @@ Its exit codes are pinned:
  "panel": {"state": "connected", "sink": "hid", "last_error": null, "reconnects": 0},
  "frames": {"fps": 14.8, "target_fps": 15, "governor_level": 0, "last_bytes": 31544, "quality": 70},
  "layout": {"regions": [{"name": "main", "instance": "gauges"}]},
- "plugins": {"gauges": {"state": "ok", "last_error": null}},
+ "plugins": {"gauges": {"state": "ok", "last_error": null, "detail": {"items": 12}}},
  "spool": {"pending": 0}, "errors": []}
 ```
+
+Each entry under `plugins` carries the instance's worker `state` and `last_error`, plus `detail`: the instance's own `describe_state()` summary (plugin-sdk.md names `status` as one of its two consumers, the other being `plugin describe`). That is where a plugin reports its own health facts — for example the crawl's per-source `last_fetch` and `last_error`, or the alerts instance's current alert and missed count.
 
 ### Configuration (FR-004, FR-006, FR-007)
 
