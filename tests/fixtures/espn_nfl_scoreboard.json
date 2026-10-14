@@ -1,0 +1,87 @@
+{
+  "leagues": [
+    {
+      "id": "28",
+      "abbreviation": "NFL",
+      "name": "National Football League"
+    }
+  ],
+  "events": [
+    {
+      "id": "401671723",
+      "shortName": "TB @ DAL",
+      "status": {
+        "type": {"state": "pre", "shortDetail": "10/8 - 8:15 PM EDT", "detail": "Tue, October 8th at 8:15 PM EDT"}
+      },
+      "competitions": [
+        {
+          "id": "401671723",
+          "competitors": [
+            {
+              "id": "6",
+              "homeAway": "home",
+              "score": "0",
+              "team": {"abbreviation": "DAL", "displayName": "Dallas Cowboys"}
+            },
+            {
+              "id": "27",
+              "homeAway": "away",
+              "score": "0",
+              "team": {"abbreviation": "TB", "displayName": "Tampa Bay Buccaneers"}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "401671724",
+      "shortName": "SF @ SEA",
+      "status": {
+        "type": {"state": "in", "shortDetail": "10/9 - 3:05 PM EDT", "detail": "Thu, October 9th at 3:05 PM EDT"}
+      },
+      "competitions": [
+        {
+          "id": "401671724",
+          "competitors": [
+            {
+              "id": "26",
+              "homeAway": "home",
+              "score": "17",
+              "team": {"abbreviation": "SEA", "displayName": "Seattle Seahawks"}
+            },
+            {
+              "id": "25",
+              "homeAway": "away",
+              "score": "21",
+              "team": {"abbreviation": "SF", "displayName": "San Francisco 49ers"}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "401671725",
+      "shortName": "NYG @ PHI",
+      "status": {
+        "type": {"state": "post", "shortDetail": "Final", "detail": "Final"}
+      },
+      "competitions": [
+        {
+          "id": "401671725",
+          "competitors": [
+            {
+              "id": "21",
+              "homeAway": "home",
+              "team": {"abbreviation": "PHI", "displayName": "Philadelphia Eagles"}
+            },
+            {
+              "id": "19",
+              "homeAway": "away",
+              "team": {"abbreviation": "NYG", "displayName": "New York Giants"}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

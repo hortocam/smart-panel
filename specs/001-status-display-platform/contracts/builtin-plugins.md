@@ -56,7 +56,7 @@ Validation: `severity` outside the three levels, empty `message`, `message` > 28
 
 ## `sources` (datasource)
 
-Provides the source types below. Sources are created with `smart-panel plugin call sources source-add ...` or by editing `sources` in config.
+Provides the source types below. A source is declared in the `sources` object of the `sources` instance's settings — `{"news": {"type": "rss", "interval_s": 300, "settings": {"url": "..."}}}` — and changed at runtime with `smart-panel data source add ...`; runtime changes are kept in the plugin's `ctx.kv` and replaced by the next settings change, so the config file is always the last word. (The top-level `sources` section of `config.json` is validated but not yet read by the instance; wiring it is a follow-up, not part of US3.)
 
 | Source type | Settings | Metrics published |
 |---|---|---|
@@ -91,8 +91,8 @@ Commands (group `crawl`):
 | Verb | Arguments | Spoolable |
 |---|---|---|
 | `items set` | `[--source ID] ITEM...` or `--stdin` (one per line) | yes |
-| `items add` / `items clear` | `[--source ID] ITEM...` | yes |
-| `source add` | `--id ID --kind {rss,json} --url URL [--preset NAME] [--template T] [--list-path P] [--interval S] [--label L]` | no |
+| `items add` / `items clear` | `[--source ID] ITEM...` (`items add` also accepts `--stdin`) | yes |
+| `source add` | `--id ID --kind {rss,json} --url URL [--preset NAME] [--query Q] [--topic T] [--template T] [--list-path P] [--interval S] [--label L]` | no |
 | `source set` / `remove` / `list` | | no |
 | `preset list` | | no |
 

@@ -74,6 +74,7 @@ def parse_options(
     values = dict(value_opts or {})
     booleans = set(bool_opts)
     repeats = set(repeat_opts)
+    known = booleans | set(values) | repeats
     positionals: list[str] = []
     options: dict[str, Any] = {}
     index = 0
@@ -85,11 +86,16 @@ def parse_options(
         if token.startswith("--") and len(token) > 2:
             name, has_eq, raw = token[2:].partition("=")
             key = name.replace("-", "_")
-            if name in booleans:
+            # A declared name may be spelled either way: ``--list-path`` and
+            # ``--list_path`` both reach the ``list_path`` argument.
+            resolved = name if name in known else (key if key in known else None)
+            if resolved is None:
+                raise UsageError(f"unknown option --{name}")
+            if resolved in booleans:
                 if has_eq:
                     raise UsageError(f"--{name} takes no value")
                 options[key] = True
-            elif name in values:
+            elif resolved in values:
                 if has_eq:
                     value = raw
                 else:
@@ -97,16 +103,14 @@ def parse_options(
                     if index >= len(tokens):
                         raise UsageError(f"--{name} needs a value")
                     value = tokens[index]
-                options[key] = _convert(values[name], value, name)
-            elif name in repeats:
+                options[key] = _convert(values[resolved], value, name)
+            else:
                 if not has_eq:
                     index += 1
                     if index >= len(tokens):
                         raise UsageError(f"--{name} needs a value")
                     raw = tokens[index]
                 options.setdefault(key, []).append(raw)
-            else:
-                raise UsageError(f"unknown option --{name}")
         elif token.startswith("-") and token != "-":
             raise UsageError(f"unknown option {token}")
         else:

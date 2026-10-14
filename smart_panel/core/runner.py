@@ -57,6 +57,7 @@ from smart_panel.core.control.spool import SpoolIngest
 from smart_panel.core.encoder import Encoder
 from smart_panel.core.fonts import FontRegistry
 from smart_panel.core.governor import Governor
+from smart_panel.core.http import HttpFetcher
 from smart_panel.core.layout import Layout, Overlay, Region
 from smart_panel.core.logging import RunnerLog
 from smart_panel.core.plugins import AlertRouter, PluginLoader
@@ -190,6 +191,7 @@ class Runner:
         self._bus: Bus | None = None
         self._fonts: FontRegistry | None = None
         self._secrets: Secrets | None = None
+        self._http: HttpFetcher | None = None
         self._control: ControlServer | None = None
         self._ingest: SpoolIngest | None = None
         self._dispatch: Any = None
@@ -368,7 +370,13 @@ class Runner:
             },
             "layout": layout,
             "plugins": {
-                name: {"state": str(worker.state), "last_error": worker.last_error}
+                name: {
+                    "state": str(worker.state),
+                    "last_error": worker.last_error,
+                    # ``plugin-sdk.md``: ``describe_state`` is the health summary
+                    # ``status`` and ``plugin describe`` report (T087).
+                    "detail": self._plugin_detail(name),
+                }
                 for name, worker in self._workers.items()
             },
             "spool": {"pending": self._ingest.pending_count() if self._ingest is not None else 0},
@@ -516,6 +524,10 @@ class Runner:
 
         self._config_data = self._config.load()
         self._secrets = Secrets(redactor=self._log.redactor)
+        # ``ctx.http`` (T080): the one bounded way a plugin reaches the network.
+        # It resolves ${secret:NAME} headers through the secrets store and redacts
+        # them from every error message (FR-049).
+        self._http = HttpFetcher(secret_resolver=self._resolve_secret, log=self._log)
         self._store = Store(clock=self._clock)
         self._bus = Bus(clock=self._clock)
         # fonts is contract (``contracts/plugin-sdk.md``): ``fonts.get(name, size)``
@@ -591,6 +603,30 @@ class Runner:
             start_quality=int(quality.get("start", 70)),
             min_quality=int(quality.get("min", 30)),
         )
+
+    def _plugin_detail(self, name: str) -> Any:
+        """The instance's ``describe_state`` summary, or ``None`` when unavailable.
+
+        ``plugin-sdk.md`` names ``status`` as a consumer of ``describe_state``; a
+        plugin whose method raises (or a not-yet-started instance) reports ``None``
+        rather than failing the whole ``status`` call.
+        """
+        plugin = self._instances.get(name)
+        if plugin is None or not hasattr(plugin, "describe_state"):
+            return None
+        try:
+            return plugin.describe_state()
+        except Exception as exc:  # pragma: no cover - a bad plugin must not break status
+            return {"error": str(exc)}
+
+    def _resolve_secret(self, name: str) -> str | None:
+        """Resolve a ``${secret:NAME}`` header value, or ``None`` when it is unset."""
+        if self._secrets is None:
+            return None
+        try:
+            return self._secrets.get(name)
+        except Exception:  # missing or unreadable secrets file
+            return None
 
     def _font_notify(self, event: Any) -> None:
         """Forward a :class:`FontRegistry` warning to the structured log (T034).
@@ -965,6 +1001,7 @@ class Runner:
             bus=self._bus,
             kv=self._store.kv(name) if self._store is not None else None,
             clock=self._clock,
+            http=self._http,
             db_factory=lambda: open_instance_db(name),
             spawn_handler=(
                 None
