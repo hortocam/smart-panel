@@ -15,6 +15,12 @@ bounds the response, not the worker: the command is not cancelled, so a stuck
 one still holds the serialized worker and delays the commands behind it.
 ``logs.tail --follow`` is the one streaming command: the dispatch returns an
 iterator and its events are written as they arrive, until the client closes.
+
+A connection handler that raises anything other than ``OSError`` (an ordinary
+disconnect) is logged as ``control_connection_failed`` before its socket is
+closed. Without that line the failure left no trace anywhere: the client saw
+only a bare close (``runner_not_running``, exit 3) and the detached runner
+discards its stderr, so the thread's traceback went nowhere.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from __future__ import annotations
 import os
 import socket
 import threading
+import traceback
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -147,12 +154,34 @@ class ControlServer:
             finally:
                 reader.close()
         except OSError:
+            # The ordinary case: the client went away mid-write.
             pass
+        except Exception as exc:  # noqa: BLE001 - a handler crash must leave a trace
+            self._log_connection_failure(exc)
         finally:
             try:
                 conn.close()
             except OSError:
                 pass
+
+    def _log_connection_failure(self, exc: Exception) -> None:
+        """Record an unexpected connection-handler failure before closing.
+
+        Without this line the failure was invisible end to end: the client got
+        only a closed connection (``runner_not_running``, exit 3) and the
+        detached runner throws its stderr away, so the thread's traceback went
+        nowhere (PR #43 needed a stderr probe and four CI runs to read one
+        ``OverflowError`` out of ``peercred.get_peer_groups``). ``error`` mirrors
+        the traceback's last line — exception type *and* message — so the log
+        line alone names what failed; ``traceback`` carries the frame where.
+        """
+        if self._log is None:
+            return
+        self._log.error(
+            "control_connection_failed",
+            error=f"{type(exc).__name__}: {exc}",
+            traceback=traceback.format_exc(),
+        )
 
     def _serve_connection(self, conn: socket.socket, reader: Any) -> None:
         try:
