@@ -15,6 +15,8 @@ Every rule quoted here is pinned by ``specs/001-status-display-platform/data-mod
   at ``max_duration_s`` default 300;
 * the countdown starts at ``shown_at``, not ``received_at``;
 * re-pushing an existing id updates it in place;
+* ``show`` — the verb, and every ``status`` through ``describe_state`` — publishes
+  ``alerts.missed`` when it is the first caller to notice a timeout;
 * a wall-clock jump or suspend/resume neither extends nor cuts short a displayed
   alert, because timers use the monotonic clock.
 """
@@ -25,6 +27,7 @@ import sqlite3
 
 import pytest
 
+from smart_panel.core.bus import Bus
 from smart_panel.plugins.alerts.model import (
     DEFAULT_DURATIONS,
     AlertValidationError,
@@ -241,3 +244,29 @@ def test_wall_clock_jump_does_not_touch_a_displayed_alert() -> None:
     clock.advance(1.5)
     manager.advance()
     assert manager.show()["current"] is None, "a frozen wall clock extended the alert"
+
+
+# ---------------------------------------------------------------- missed topic
+
+
+def test_show_publishes_the_missed_topic_when_it_is_the_first_to_notice() -> None:
+    """``show`` (and so every ``status``) must publish ``alerts.missed`` too.
+
+    Regression (t_bdb6e057): ``show()`` advanced the timers, expired the alert and
+    marked it missed, but never called ``_publish_missed()``. When this call is the
+    first to notice the timeout -- no render tick has run -- the topic kept its
+    previous value, so the sidebar's built-in alert entry never saw the count.
+    """
+    clock = FakeClock()
+    store = AlertStore(sqlite3.connect(":memory:", check_same_thread=False), clock=clock)
+    store.init()
+    bus = Bus(clock=clock)
+    manager = AlertManager(store, clock, bus=bus)
+    manager.start()
+    manager.submit(severity="critical", message="on battery", id="ups-1", ttl=1)
+    assert bus.get("alerts.missed").value == {"count": 0, "max_severity": None}
+
+    clock.advance(2)  # the display time elapses; nothing else settles the timer
+    show = manager.show()
+    assert show["missed"] == {"count": 1, "max_severity": "critical"}
+    assert bus.get("alerts.missed").value == {"count": 1, "max_severity": "critical"}
