@@ -253,16 +253,16 @@ Single distribution with two packages: `panel_driver/` (transport, existing) and
 
 ### Tests for User Story 6 (write first, confirm they fail)
 
-- [ ] T110 [P] [US6] Parametrized conformance test in `tests/contract/test_builtin_conformance.py` running `assert_conforms` on every built-in plugin (`text`, `sources`, `alerts`, `crawl`, `gauges`, `sidebar`).
-- [ ] T111 [P] [US6] Isolation test in `tests/integration/test_plugin_isolation.py`: test plugins that raise in `render`, return the wrong size, return the wrong type, and sleep past the 2 s hard deadline; every other region keeps rendering, `status` shows `degraded` or `stalled` with the last error, an error badge appears in the failing region, and the runner survives and can remove the plugin.
-- [ ] T112 [P] [US6] Drop-in test in `tests/integration/test_dropin_plugin.py`: copy a sample plugin file into `<home>/plugins/`, `plugin list` shows it, it is assigned to a region by configuration alone and renders, invalid settings are rejected from its declared settings, removing it leaves the runner unaffected; also a name clash with a built-in, a bad name, and a broken import are reported as `load_failed`.
+- [x] T110 [P] [US6] Parametrized conformance test in `tests/contract/test_builtin_conformance.py` running `assert_conforms` on every built-in plugin (`text`, `sources`, `alerts`, `crawl`, `gauges`, `sidebar`).
+- [x] T111 [P] [US6] Isolation test in `tests/integration/test_plugin_isolation.py`: test plugins that raise in `render`, return the wrong size, return the wrong type, and sleep past the 2 s hard deadline; every other region keeps rendering, `status` shows `degraded` or `stalled` with the last error, an error badge appears in the failing region, and the runner survives and can remove the plugin.
+- [x] T112 [P] [US6] Drop-in test in `tests/integration/test_dropin_plugin.py`: copy a sample plugin file into `<home>/plugins/`, `plugin list` shows it, it is assigned to a region by configuration alone and renders, invalid settings are rejected from its declared settings, removing it leaves the runner unaffected; also a name clash with a built-in, a bad name, and a broken import are reported as `load_failed`.
 
 ### Implementation for User Story 6
 
-- [ ] T113 [P] [US6] Write the sample third-party plugin `examples/plugins/clock.py` (region plugin using only `smart_panel.sdk`, with a `format` setting, an `animated` flag, and a `crash` verb used by tests and the quickstart).
-- [ ] T114 [P] [US6] Write `docs/plugin-authoring.md`: manifest, settings, lifecycle, render rules (use `frame.now`, never block, deadlines), commands and `spoolable`, data source plugins, alert-source plugins (`alert_source` capability and `ctx.alert`), the `sdk.testing` harness with a worked example, entry-point packaging snippet for `pyproject.toml`, and the isolation limits from `contracts/plugin-sdk.md`.
-- [ ] T115 [US6] Complete plugin management in the CLI and core: `plugin list` shows `load_failed` and `incompatible` states, `plugin describe` prints settings with types, ranges, and defaults, setting rejections quote the plugin's declared constraints, and `schema` includes third-party plugin verbs (depends on T058, T059, T113).
-- [ ] T116 [US6] Run quickstart Scenario G, fix defects, and confirm T110 to T112 pass (depends on T110 to T115).
+- [x] T113 [P] [US6] Write the sample third-party plugin `examples/plugins/clock.py` (region plugin using only `smart_panel.sdk`, with a `format` setting, an `animated` flag, and a `crash` verb used by tests and the quickstart).
+- [x] T114 [P] [US6] Write `docs/plugin-authoring.md`: manifest, settings, lifecycle, render rules (use `frame.now`, never block, deadlines), commands and `spoolable`, data source plugins, alert-source plugins (`alert_source` capability and `ctx.alert`), the `sdk.testing` harness with a worked example, entry-point packaging snippet for `pyproject.toml`, and the isolation limits from `contracts/plugin-sdk.md`.
+- [x] T115 [US6] Complete plugin management in the CLI and core: `plugin list` shows `load_failed` and `incompatible` states, `plugin describe` prints settings with types, ranges, and defaults, setting rejections quote the plugin's declared constraints, and `schema` includes third-party plugin verbs (depends on T058, T059, T113).
+- [x] T116 [US6] Run quickstart Scenario G, fix defects, and confirm T110 to T112 pass (depends on T110 to T115).
 
 **Checkpoint**: All six user stories are independently functional.
 

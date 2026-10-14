@@ -149,10 +149,15 @@ def test_soft_deadline_is_logged_and_hard_deadline_stalls(fake_clock) -> None:
         fake_clock.advance(2.0)
         assert worker.check_deadlines() is True
         assert worker.state == InstanceState.STALLED
+        # ``status`` reports a stalled instance "with the last error" (T111), so
+        # the hard-deadline overrun records why it is stalled, exactly as a raised
+        # render records its message.
+        assert "hard deadline" in (worker.last_error or "")
 
         release.set()
         assert worker.wait_idle(2)
         assert worker.state == InstanceState.OK
+        assert worker.last_error is None, "recovering from a stall clears the error"
     finally:
         release.set()
         worker.stop()
