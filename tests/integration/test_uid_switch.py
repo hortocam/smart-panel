@@ -124,7 +124,16 @@ def _build_stage(root: Path) -> Stage:
     """Copy the interpreter, the venv's site-packages and the source into ``root``."""
     root.mkdir(parents=True, exist_ok=True)
     os.chmod(root, 0o755)
-    shutil.copytree(sys.base_prefix, root / "py", symlinks=False, dirs_exist_ok=True)
+    # python.org 3.13 on macos-latest ships Tk/Tcl framework symlinks whose targets
+    # are absent from the image; without ignore_dangling_symlinks the whole stage
+    # aborts on them and every cross-account test skips (card t_e2514bdf).
+    shutil.copytree(
+        sys.base_prefix,
+        root / "py",
+        symlinks=False,
+        dirs_exist_ok=True,
+        ignore_dangling_symlinks=True,
+    )
     shutil.copytree(
         Path(sysconfig.get_paths()["purelib"]), root / "site", symlinks=False, dirs_exist_ok=True
     )
