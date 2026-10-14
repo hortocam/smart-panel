@@ -54,7 +54,7 @@ Plugin verbs travel as `plugin.call`; a manifest declares for each verb: `name`,
 
 ## Authorization
 
-For every connection the server obtains `(uid, gid)` from the kernel and the peer's supplementary groups via `os.getgrouplist`. `access.is_allowed` returns true when the uid is the runner's uid or 0, is listed in `access.allowed_users`, or the peer belongs to `access.allowed_group`. Otherwise the server writes one `not_permitted` response, logs `denied uid=<n>`, and closes. Commands that change the allow-list or secrets additionally require uid == runner uid or 0.
+For every connection the server obtains `(uid, gid)` from the kernel and the peer's supplementary groups via `os.getgrouplist`. Group enumeration is best-effort: when the peer's account is unknown to the host, or its group id does not fit the platform's group lookup (macOS takes a C `int`, and the kernel reports `nobody` as group 4294967294), the peer counts as a member of its primary group only. A group-lookup failure is never an error reply and never closes the connection. `access.is_allowed` returns true when the uid is the runner's uid or 0, is listed in `access.allowed_users`, or the peer belongs to `access.allowed_group`. Otherwise the server writes one `not_permitted` response, logs `denied uid=<n>`, and closes. Commands that change the allow-list or secrets additionally require uid == runner uid or 0.
 
 ## Atomicity and ordering
 
