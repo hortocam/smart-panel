@@ -150,13 +150,26 @@ def host(tmp_path: Path) -> Iterator[CliHost]:
         shutil.rmtree(base, ignore_errors=True)
 
 
-def _wait_until(predicate, timeout: float = 15.0) -> bool:
+# The wait below polls for an effect the runner's own background loop produces:
+# the source's first fetch attempt (to an unreachable endpoint) landing as a
+# failure in ``status``. The runner schedules that fetch off the wall clock, so
+# no fake-clock step is involved. A starved CI leg leaves the loop unscheduled
+# for seconds: 15 s was not enough headroom, so this is the 30 s the sibling e2e
+# hosts settled on for their first-frame ``start`` (``test_gauges_e2e``,
+# ``test_sidebar_e2e``, ``test_plugin_isolation``, ``test_dropin_plugin``; see
+# 4ea0909). It stays bounded: a wait whose effect never lands still fails, now
+# naming the effect.
+EFFECT_WAIT_S = 30.0
+
+
+def _wait_until(predicate, *, what: str, timeout: float = EFFECT_WAIT_S) -> None:
+    """Poll ``predicate`` until it holds, or fail naming the effect waited for."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
-            return True
+            return
         time.sleep(0.1)
-    return False
+    raise AssertionError(f"{what} never appeared within {timeout:g}s")
 
 
 def _sources_detail(status: dict) -> dict:
@@ -206,7 +219,7 @@ def test_a_resolved_secret_never_appears_in_status_logs_or_config_show(host: Cli
         json.dumps(settings),
     )
 
-    assert _wait_until(lambda: _source_state(host, "news") is not None), "the fetch never failed"
+    _wait_until(lambda: _source_state(host, "news") is not None, what="the failed fetch")
     status = host.status()
     state = _sources_detail(status)["news"]
 

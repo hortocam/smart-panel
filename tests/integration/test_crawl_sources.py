@@ -198,10 +198,17 @@ class CliHost:
         self.clock.write_text(f"{value}\n", encoding="utf-8")
 
     def start(self) -> dict:
+        # The CLI detaches a ``run`` child and waits ``max(--timeout, 10)`` for
+        # its first frame, so the host's bound is the CLI's bound. 15 s was too
+        # tight for a starved CI leg — macos-latest has been seen to starve a
+        # render worker for over 25 s — so this uses the 30 s the sibling e2e
+        # hosts settled on (``test_gauges_e2e``, ``test_sidebar_e2e``,
+        # ``test_plugin_isolation``, ``test_dropin_plugin``). It stays bounded:
+        # a runner that never comes up still fails.
         return self.ok(
             "--json",
             "--timeout",
-            "15",
+            "30",
             "start",
             "--sink",
             "files",
@@ -209,7 +216,7 @@ class CliHost:
             str(self.frames),
             "--clock-file",
             str(self.clock),
-            timeout=45,
+            timeout=60,
         )
 
     def stop(self) -> subprocess.CompletedProcess[str]:

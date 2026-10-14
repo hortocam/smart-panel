@@ -151,7 +151,11 @@ class CliHost:
         )
         self.clock.write_text("0\n", encoding="utf-8")
 
-    def start(self, *, timeout: str = "15") -> subprocess.CompletedProcess[str]:
+    def start(self, *, timeout: str = "30") -> subprocess.CompletedProcess[str]:
+        # The CLI detaches a ``run`` child and waits ``max(--timeout, 10)`` for
+        # its first frame; 15 s was too tight for a starved CI leg, so the
+        # default is the 30 s the sibling e2e hosts settled on. The subprocess
+        # bound below (``--timeout`` + 30) stays above the CLI's own wait.
         return self.cli(
             "--json",
             "--timeout",
@@ -292,12 +296,21 @@ def test_a_config_set_appears_in_preview_without_a_partial_frame(host: CliHost) 
 def test_restart_returns_content(host: CliHost) -> None:
     _require_started(host)
 
-    # A generous global ``--timeout``: the start wait is ``max(ctx.timeout, 10)``
-    # and a loaded macOS CI runner can take well over 10 s to bring a fresh
-    # runner up to its first frame. The wait stays bounded, so a runner that
-    # never starts still fails.
+    # A generous global ``--timeout``: ``restart`` stops the runner first, then
+    # the start wait is ``max(ctx.timeout, 10)`` for the fresh runner's first
+    # frame — a loaded macOS CI runner can take well over 10 s to bring one up.
+    # 30 s matches the sibling e2e hosts' ``start`` bound; the wait stays
+    # bounded, so a runner that never starts still fails.
+    #
+    # ``restart`` is the only stop->start of these hosts, so the CLI's internal
+    # worst case is the *sum* of the two waits — stop ``max(ctx.timeout, 10)``
+    # plus start ``max(ctx.timeout, DEFAULT_START_TIMEOUT_S)`` = 30 + 30, plus
+    # interpreter startup (``commands/runner.py:86-87``). The old 60 s subprocess
+    # bound sat flush with that; 90 s is the hosts' ``--timeout`` + 30 idiom
+    # applied to the two-phase command, and still bounds: a restart that never
+    # returns fails.
     restarted, proc = host.data(
-        "--json", "--timeout", "20", "restart", "--clock-file", str(host.clock), timeout=65
+        "--json", "--timeout", "30", "restart", "--clock-file", str(host.clock), timeout=90
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert restarted["data"]["state"] == "running"
@@ -394,7 +407,7 @@ def _start_args(host: CliHost) -> list[str]:
     return [
         "--json",
         "--timeout",
-        "15",
+        "30",
         "start",
         "--sink",
         "files",
@@ -406,7 +419,7 @@ def _start_args(host: CliHost) -> list[str]:
 
 
 def _require_started(host: CliHost) -> dict:
-    started, proc = host.data(*_start_args(host), timeout=45)
+    started, proc = host.data(*_start_args(host), timeout=60)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert started["data"]["state"] == "running"
     return started
