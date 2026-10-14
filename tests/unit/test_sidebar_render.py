@@ -382,6 +382,98 @@ def test_a_cached_region_re_checks_a_fallback_so_a_repair_shows_on_the_next_fram
         harness.stop()
 
 
+def test_a_removed_entrys_icon_fallback_is_dropped_from_status(tmp_path: Path) -> None:
+    """A fallback must not outlive the entry whose icon recorded it.
+
+    ``entry remove`` changes the rendered rows, so the region is rebuilt — but
+    ``_draw`` only resolves the rows it draws, so without a prune the removed
+    entry's icon keeps its generic-fallback warning in ``status`` for the rest of
+    the run (until ``stop()``).
+    """
+    broken = tmp_path / "broken.png"
+    broken.write_bytes(b"nope")
+    harness = PluginHarness(
+        SidebarPlugin,
+        {
+            "entries": [
+                _entry(0, icon=str(broken)).to_dict(),
+                _entry(1, icon="mail").to_dict(),
+            ]
+        },
+        size=REGION,
+    )
+    try:
+        frame = FrameContext(
+            size=REGION,
+            now=0.0,
+            wall=0.0,
+            frame_index=1,
+            fonts=FontRegistry(),
+            icons=IconRegistry(),
+            bus=ReadOnlyBus(harness.bus),
+            min_text_px=24,
+        )
+        harness.plugin.render(frame)
+        listed = harness.state()["warnings"]
+        assert any(str(broken) in str(warning["icon"]) for warning in listed), listed
+
+        harness.command("entry remove", id="e0")
+        harness.plugin.render(frame)
+
+        assert [row["id"] for row in harness.state()["entries"]] == ["e1"]
+        assert harness.state()["warnings"] == [], (
+            "a removed entry's icon fallback must not outlive the entry"
+        )
+        renderer = harness.plugin._renderer
+        assert renderer.fallbacks == {}, (
+            "the renderer must prune the fallback its removed row recorded"
+        )
+    finally:
+        harness.stop()
+
+
+def test_pruning_a_removed_entry_leaves_the_other_warnings_alone(tmp_path: Path) -> None:
+    """The prune is per icon: removing one broken entry keeps the other's warning.
+
+    A fix that merely cleared ``fallbacks`` whenever the rows changed would pass the
+    test above and be wrong; the surviving entry's warning must stay in ``status``.
+    """
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    first.write_bytes(b"nope")
+    second.write_bytes(b"also nope")
+    harness = PluginHarness(
+        SidebarPlugin,
+        {
+            "entries": [
+                _entry(0, icon=str(first)).to_dict(),
+                _entry(1, icon=str(second)).to_dict(),
+            ]
+        },
+        size=REGION,
+    )
+    try:
+        frame = FrameContext(
+            size=REGION,
+            now=0.0,
+            wall=0.0,
+            frame_index=1,
+            fonts=FontRegistry(),
+            icons=IconRegistry(),
+            bus=ReadOnlyBus(harness.bus),
+            min_text_px=24,
+        )
+        harness.plugin.render(frame)
+        assert len(harness.state()["warnings"]) == 2, harness.state()["warnings"]
+
+        harness.command("entry remove", id="e0")
+        harness.plugin.render(frame)
+        remaining = [str(warning["icon"]) for warning in harness.state()["warnings"]]
+        assert remaining == [str(second)], remaining
+    finally:
+        harness.stop()
+
+
 def test_documented_limitation_a_cached_success_trusts_its_stamp(tmp_path: Path) -> None:
     """A cached *success* trusts the ``(mtime_ns, size)`` stamp — including its blind spot.
 

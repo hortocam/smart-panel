@@ -182,7 +182,9 @@ class SidebarRenderer:
         """Icons that fell back to the generic image this run (name -> reason).
 
         Cleared per icon when it resolves again — on a rebuild *or* by the cached
-        frame's fallback re-check — so it names only the icons that are unusable now.
+        frame's fallback re-check — and pruned for an icon no current row names any
+        more (a removed entry takes its fallback with it), so it names only the
+        icons that are unusable now.
         """
         self.builds = 0
         """How many region images have been rasterised (a cache-miss counter)."""
@@ -191,6 +193,24 @@ class SidebarRenderer:
         """Drop the cached image (a settings change or a stop)."""
         self._key = None
         self._image = None
+
+    def _prune_fallbacks(
+        self, rows: Sequence[tuple[SidebarEntry, SidebarReading]]
+    ) -> None:
+        """Drop recorded fallbacks for icons no current row names.
+
+        Removing an entry rebuilds the region, but :meth:`_draw` only resolves the
+        rows it draws, so a removed entry's icon would otherwise keep its generic
+        fallback — and its ``status`` warning — for the rest of the run (until
+        :meth:`forget`, which a ``stop`` calls). Pruning here, before the cache is
+        consulted, keeps :attr:`fallbacks` to the icons the current rows use, on a
+        served-from-cache frame as well as a rebuilt one.
+        """
+        if not self.fallbacks:
+            return
+        live = {str(entry.icon) for entry, _reading in rows}
+        for name in [name for name in self.fallbacks if name not in live]:
+            del self.fallbacks[name]
 
     def _refresh_fallbacks(
         self, frame: Any, rows: Sequence[tuple[SidebarEntry, SidebarReading]]
@@ -245,7 +265,8 @@ class SidebarRenderer:
         while an icon file replaced, repaired differently or corrupted *after* a
         successful draw is re-resolved at the region's next rebuild — any visible
         change, a settings change or a restart (and see ``core/icons.py`` on the stamp's
-        limits).
+        limits). The recorded fallbacks are also pruned to the icons the current rows
+        name, so an entry removed at runtime drops its warning along with its row.
         """
         rows = list(zip(entries, readings, strict=False))
         now = float(getattr(frame, "now", 0.0) or 0.0)
@@ -282,6 +303,10 @@ class SidebarRenderer:
             str(settings.get("font")),
             int(getattr(frame, "min_text_px", 0) or 0),
         )
+        # A row that is gone takes its fallback with it: the region rebuilds when the
+        # rows change, but ``_draw`` only resolves the rows it draws, so without this
+        # prune a removed entry's icon would keep its ``status`` warning until ``stop``.
+        self._prune_fallbacks(rows)
         if (
             self._key == key
             and self._image is not None
