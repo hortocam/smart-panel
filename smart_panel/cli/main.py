@@ -212,12 +212,20 @@ def _match_verb(
 
 def _run_verb(ctx: CliContext, spec: dict[str, Any], tokens: list[str]) -> dict[str, Any]:
     declared = list(spec.get("args", []))
-    value_opts = {arg["name"]: _arg_converter(arg) for arg in declared}
-    positionals, opts = parse_options(tokens, value_opts=value_opts)
-    if len(positionals) > len(declared):
+    # A ``bool`` argument is a flag (``--current``), not ``--current VALUE``: it is
+    # passed in ``bool_opts`` and never consumes a positional.
+    flags = [arg["name"].replace("-", "_") for arg in declared if arg.get("type") == "bool"]
+    value_opts = {arg["name"]: _arg_converter(arg) for arg in declared if arg.get("type") != "bool"}
+    positionals, opts = parse_options(tokens, value_opts=value_opts, bool_opts=flags)
+    values = [arg for arg in declared if arg.get("type") != "bool"]
+    if len(positionals) > len(values):
         raise UsageError(f"too many arguments for {spec.get('verb')!r}")
-    args: dict[str, Any] = {}
-    for index, arg in enumerate(declared):
+    args: dict[str, Any] = {
+        arg["name"]: True
+        for arg in declared
+        if arg.get("type") == "bool" and arg["name"].replace("-", "_") in opts
+    }
+    for index, arg in enumerate(values):
         name = arg["name"]
         key = name.replace("-", "_")
         if key in opts:
@@ -301,13 +309,20 @@ def _build_groups(
         instance = _default_instance(manifest.name, instances)
         verbs: dict[str, dict[str, Any]] = {}
         for command in manifest.commands:
-            verbs[command.name.replace("-", " ")] = {
+            # The verb is spelled the way the manifest names it: ``alert clear-missed``
+            # is one token, ``crawl items set`` is two. The space-spelled alias is
+            # registered too, so a hyphenated multi-word name accepts either form.
+            spec = {
                 "instance": instance,
                 "verb": command.name,
                 "spoolable": bool(command.spoolable),
                 "summary": command.summary,
                 "args": [_arg_dict(setting) for setting in command.args],
             }
+            verbs[command.name] = spec
+            alias = command.name.replace("-", " ")
+            if alias != command.name:
+                verbs.setdefault(alias, spec)
         if verbs:
             groups[group] = verbs
     return groups

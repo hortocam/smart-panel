@@ -59,12 +59,12 @@ from smart_panel.core.fonts import FontRegistry
 from smart_panel.core.governor import Governor
 from smart_panel.core.layout import Layout, Overlay, Region
 from smart_panel.core.logging import RunnerLog
-from smart_panel.core.plugins import PluginLoader
+from smart_panel.core.plugins import AlertRouter, PluginLoader
 from smart_panel.core.scheduler import Scheduler
 from smart_panel.core.secrets import Secrets
 from smart_panel.core.sinks import FileSink, HidSink, NullSink, SinkState
 from smart_panel.core.store import Store, open_instance_db
-from smart_panel.core.workers import InstanceState, RenderWorker
+from smart_panel.core.workers import InstanceState, RenderWorker, bind_alert_router
 from smart_panel.sdk.context import FrameContext, InstanceContext, SystemClock
 
 __all__ = ["FileClock", "Runner", "RunnerConflict", "RunnerError"]
@@ -197,6 +197,10 @@ class Runner:
         self._workers: dict[str, RenderWorker] = {}
         self._instances: dict[str, Any] = {}
         self._last_images: dict[str, Any] = {}
+        # ``ctx.alert`` is routed generically to whichever instance's manifest
+        # declares ``alert_sink``; the core names no plugin (T132). The lambda
+        # reads the live instance map, so a config change is picked up at once.
+        self._alert_router = AlertRouter(lambda: self._instances)
 
         self._stop = threading.Event()
         self._stop_lock = threading.Lock()
@@ -711,9 +715,18 @@ class Runner:
             if state == InstanceState.STARTING:
                 delivered = False
             image = worker.last_image
-            if image is not None and self._last_images.get(name) is not image:
-                self._last_images[name] = image
-                self._compositor.update(name, image)
+            if image is not None:
+                if self._last_images.get(name) is not image:
+                    self._last_images[name] = image
+                    self._compositor.update(name, image)
+            elif self._last_images.get(name) is not None:
+                # The instance went from an image to ``Inactive`` (an overlay with
+                # nothing to draw): clear its layer, so the region underneath shows
+                # through again instead of the stale image (contract
+                # ``plugin-sdk.md``: ``Inactive`` = "draw nothing"). Without this an
+                # alert that timed out would stay on the panel forever (T073).
+                self._last_images[name] = None
+                self._compositor.update(name, None)
         # Read the compositor's dirty set *before* composing (composing clears
         # it): it is the "something visible moved this pass" signal the first
         # frame gate needs.
@@ -928,6 +941,9 @@ class Runner:
         context = self._instance_context(name, plugin_class)
         plugin = plugin_class(context, dict(instance.get("settings", {}) or {}))
         worker = RenderWorker(plugin, clock=self._clock, log=self._log, size=context.region_size)
+        # ``ctx.alert`` from this instance's render thread or spawned task reaches
+        # the same generic router the control channel uses (T132).
+        bind_alert_router(worker, self._alert_router)
         try:
             plugin.start()
         except Exception as exc:  # a failing start marks the instance failed
@@ -960,7 +976,6 @@ class Runner:
             notify_handler=lambda payload: self._log.info(
                 "instance_notify", instance=name, payload=str(payload)
             ),
-            alert_handler=self._raise_alert,
         )
 
     def _region_size_for(self, instance: str) -> tuple[int, int] | None:
@@ -987,16 +1002,19 @@ class Runner:
         for name, worker in self._workers.items():
             worker.set_size(self._region_size_for(name))
 
-    def _raise_alert(self, **_kwargs: Any) -> Any:
-        """Route ``ctx.alert`` to the instance declaring the ``alert_sink`` capability."""
-        for instance in self._instances.values():
-            manifest = getattr(instance, "manifest", None)
-            if manifest is not None and "alert_sink" in manifest.capabilities:
-                return instance.handle_command("push", {"_from_ctx": True})
-        raise RunnerError("no instance declares the alert_sink capability")
-
     def _replay_spool(self, request: protocol.Request, received_at: float) -> Any:
-        response = self._dispatch(request)
+        """Replay one spool entry through the normal command path.
+
+        The entry's receive time is carried to the plugin command as
+        ``_received_at``: it is the only reference a plugin has for "how long
+        did this wait while the runner was down" (``data-model.md``: an alert's
+        ``received_at`` is the "CLI or spool receive time").
+        """
+        args = dict(request.args or {})
+        inner = args.get("args")
+        if isinstance(inner, Mapping):
+            args["args"] = {**inner, "_received_at": received_at}
+        response = self._dispatch(replace(request, args=args))
         if isinstance(response, protocol.Response) and not response.ok:
             error = response.error.message if response.error is not None else "replay failed"
             raise RunnerError(error)

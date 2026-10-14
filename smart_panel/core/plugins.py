@@ -20,7 +20,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
@@ -330,6 +330,56 @@ class PluginLoader:
 def _sdk_major(version: str) -> int:
     head = str(version).split(".", 1)[0]
     return int(head) if head.isdigit() else 0
+
+
+class AlertRoutingError(RuntimeError):
+    """No instance declares the ``alert_sink`` capability to receive an alert."""
+
+
+class AlertRouter:
+    """Route ``ctx.alert`` to the instance whose manifest declares ``alert_sink`` (T132).
+
+    Generic by construction: the core names no plugin and holds no alerts logic.
+    ``instances`` is a callable returning the live mapping of instance name ->
+    plugin object (the runner's ``_instances``), read on every call, so a live
+    ``config set`` that adds, removes or replaces the sink takes effect at once.
+
+    The payload is handed to that instance's ``push`` verb, so ``ctx.alert`` is
+    validated exactly like ``alert push`` and returns the same result shape
+    (``contracts/plugin-sdk.md``: "with the same validation as ``alert push``").
+    One sink is used; a second ``alert_sink`` instance is never ambiguous in
+    practice because only the first in configuration order receives the alert.
+    """
+
+    def __init__(self, instances: Callable[[], Mapping[str, Any]]) -> None:
+        self._instances = instances
+
+    def sink(self) -> Any | None:
+        """The first started instance declaring ``alert_sink``, or ``None``."""
+        for plugin in self._instances().values():
+            manifest = getattr(plugin, "manifest", None)
+            if manifest is not None and "alert_sink" in manifest.capabilities:
+                return plugin
+        return None
+
+    def route(
+        self,
+        severity: str,
+        message: str,
+        title: str | None = None,
+        source: str | None = None,
+        id: str | None = None,  # noqa: A002 - the field is named ``id`` by the contract
+        ttl: float | None = None,
+    ) -> Any:
+        """Deliver one alert; raise :class:`AlertRoutingError` when there is no sink."""
+        sink = self.sink()
+        if sink is None:
+            raise AlertRoutingError("no instance declares the alert_sink capability")
+        payload: dict[str, Any] = {"severity": severity, "message": message}
+        for key, value in (("title", title), ("source", source), ("id", id), ("ttl", ttl)):
+            if value is not None:
+                payload[key] = value
+        return sink.handle_command("push", payload)
 
 
 def _load_builtin_registry() -> dict[str, type[Plugin]]:
