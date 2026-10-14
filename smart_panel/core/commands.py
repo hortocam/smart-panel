@@ -108,6 +108,50 @@ _CORE_COMMANDS: dict[str, dict[str, Any]] = {
     "schema.get": {"summary": "The machine-readable CLI surface"},
 }
 
+# Commands the CLI handles entirely in its own process: they spawn or signal the
+# runner (``run``/``start``/``restart``, ``service``) or read local state
+# (``version``), and never travel over the control channel —
+# ``contracts/control-protocol.md`` "Commands" has no ``cmd`` for them. They are
+# part of the CLI surface an agent discovers with ``schema`` (SC-008), so they
+# are documented here rather than omitted, marked ``cli_local``.
+_CLI_COMMANDS: dict[str, dict[str, Any]] = {
+    "run": {
+        "summary": "Run the runner in the foreground (used by the service)",
+        "args": {"sink": "str?", "files-dir": "str?", "clock-file": "str?"},
+        "cli_local": True,
+    },
+    "start": {
+        "summary": "Start the runner in the background and wait for the first frame",
+        "args": {"sink": "str?", "files-dir": "str?", "clock-file": "str?"},
+        "cli_local": True,
+    },
+    "restart": {
+        "summary": "Stop then start the runner, waiting for content again",
+        "args": {"sink": "str?", "files-dir": "str?", "clock-file": "str?"},
+        "cli_local": True,
+    },
+    "service.install": {
+        "summary": "Install and enable the user service (systemd / launchd)",
+        "args": {},
+        "cli_local": True,
+    },
+    "service.uninstall": {
+        "summary": "Disable and remove the user service",
+        "args": {},
+        "cli_local": True,
+    },
+    "service.status": {
+        "summary": "Report whether the service is installed, active and enabled",
+        "args": {},
+        "cli_local": True,
+    },
+    "version": {
+        "summary": "Package and protocol versions (no permission required)",
+        "args": {},
+        "cli_local": True,
+    },
+}
+
 
 def make_dispatch(runner: Any) -> Callable[[protocol.Request], Any]:
     """Return the server-side ``dispatch(request)`` for ``runner``."""
@@ -512,7 +556,17 @@ def _schema_get(runner: Any, _args: dict[str, Any]) -> dict[str, Any]:
 
 
 def schema(runner: Any = None) -> dict[str, Any]:
-    """The machine-readable CLI surface (``schema.get``/``smart-panel schema``)."""
+    """The machine-readable CLI surface (``schema.get``/``smart-panel schema``).
+
+    Three sections describe every command an agent can call (SC-008):
+
+    * ``commands`` — the control-channel requests (``cmd`` names).
+    * ``plugin_verbs`` — the verbs every discovered manifest declares, generated
+      from the manifests so a third-party plugin appears like a built-in.
+    * ``cli_commands`` — the few commands the CLI handles in its own process and
+      never sends over the channel (``run``/``start``/``restart``, ``service``,
+      ``version``); each carries ``cli_local: true``.
+    """
     plugin_verbs: dict[str, Any] = {}
     if runner is not None and runner.loader is not None:
         for record in runner.loader.records:
@@ -527,6 +581,7 @@ def schema(runner: Any = None) -> dict[str, Any]:
                 }
     return {
         "commands": _CORE_COMMANDS,
+        "cli_commands": _CLI_COMMANDS,
         "exit_codes": _EXIT_CODES,
         "plugin_verbs": plugin_verbs,
     }
