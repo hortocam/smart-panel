@@ -153,11 +153,18 @@ def _start_detached(
 
     env = dict(os.environ)
     env["SMART_PANEL_HOME"] = str(ctx.home)
+    # TEMPORARY probe hook (card t_e2514bdf): the detached runner's stderr is
+    # discarded, which hides a control-connection traceback from CI. Unset in
+    # production; removed before this change is submitted.
+    stderr_target: Any = subprocess.DEVNULL
+    diagnostic = os.environ.get("SMART_PANEL_RUNNER_STDERR")
+    if diagnostic:
+        stderr_target = open(diagnostic, "ab")  # noqa: SIM115
     subprocess.Popen(
         argv,
         start_new_session=True,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=stderr_target,
         stdin=subprocess.DEVNULL,
         env=env,
         cwd=str(Path.cwd()),
