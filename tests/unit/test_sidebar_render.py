@@ -21,6 +21,7 @@ Entry, FR-037 to FR-041):
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -212,6 +213,55 @@ def test_an_icon_that_appears_later_resolves_and_stops_warning(tmp_path: Path) -
     assert ok is True
     assert image.tobytes() != registry.generic(64).tobytes()
     assert registry.warnings == []
+
+
+def test_a_same_length_repair_at_the_same_stamp_is_still_re_read(tmp_path: Path) -> None:
+    """``(mtime_ns, size)`` is not a complete identity, so a failed entry is re-read.
+
+    Two writes microseconds apart can share one ``st_mtime_ns`` on a coarse clock, so
+    a file repaired at the same byte length inside the same tick would otherwise never
+    be re-read and its fallback would stick forever. The stamp is pinned here so the
+    test does not depend on the host clock's granularity.
+    """
+    registry = IconRegistry()
+    icon = tmp_path / "mail.png"
+    PILImage.new("RGBA", (64, 64), (10, 20, 30, 255)).save(icon)
+    good = icon.read_bytes()
+    when = (1_700_000_000_000_000_000, 1_700_000_000_000_000_000)  # fixed (atime, mtime)
+
+    icon.write_bytes(b"\x00" * len(good))  # same length, no longer a PNG
+    os.utime(icon, ns=when)
+    assert registry.get_with_status(str(icon), 64)[1] is False
+    assert [warning["icon"] for warning in registry.warnings] == [str(icon)]
+
+    icon.write_bytes(good)  # repaired: same path, same byte length, same stamp
+    os.utime(icon, ns=when)
+    image, ok = registry.get_with_status(str(icon), 64)
+    assert ok is True, "a same-length repair must not be masked by a cached failure"
+    assert image.tobytes() != registry.generic(64).tobytes()
+    assert registry.warnings == [], "the stale warning must be dropped once it resolves"
+
+
+def test_an_identical_failure_is_not_re_notified_but_a_new_one_is(tmp_path: Path) -> None:
+    """A still-failing file is re-read every lookup without spamming the log.
+
+    ``status`` already lists the icon, so an identical ``icon_unusable`` event is
+    suppressed on a repeat re-read; a genuinely different condition still notifies.
+    """
+    events: list[dict] = []
+    registry = IconRegistry(notify=events.append)
+    icon = tmp_path / "mail.png"
+    icon.write_bytes(b"nope")
+
+    assert registry.get_with_status(str(icon), 64)[1] is False
+    assert registry.get_with_status(str(icon), 64)[1] is False
+    assert registry.get_with_status(str(icon), 64)[1] is False
+    assert len(events) == 1, f"an identical repeat must not re-notify: {events}"
+    assert len(registry.warnings) == 1, "one entry per icon, not one per lookup"
+
+    icon.unlink()  # now a different condition: the file is gone
+    assert registry.get_with_status(str(icon), 64)[1] is False
+    assert len(events) == 2, f"a different failure must still notify: {events}"
 
 
 def test_the_sidebar_lists_its_icon_fallbacks_in_status(tmp_path: Path) -> None:

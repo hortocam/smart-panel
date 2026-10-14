@@ -9,13 +9,15 @@ gets a square image back:
   from :meth:`IconRegistry.resolve`;
 * a name that resolves but whose file cannot be decoded falls back to the
   *generic* icon, and the failure is recorded in :attr:`IconRegistry.warnings`
-  (and sent to the optional ``notify`` callback) so ``status`` lists it instead of
-  a broken icon appearing silently.
+  (and sent to the optional ``notify`` callback, once per distinct failure) so
+  ``status`` lists it instead of a broken icon appearing silently.
 
 A warning is not permanent: the cache remembers the source file's identity
-(mtime and size), so a file replaced or created at the same path is re-read, and
-when an icon resolves again its warning is dropped from :attr:`IconRegistry.warnings`
-— ``status`` lists the icons that are unusable *now*, not the ones that once were.
+(mtime and size) for a *successful* resolution, while a *failed* one is re-read on
+every lookup, so an icon repaired at the same path — even at the same byte length
+inside one timestamp tick — resolves again, and when it does its warning is dropped
+from :attr:`IconRegistry.warnings`: ``status`` lists the icons that are unusable
+*now*, not the ones that once were.
 
 The module mirrors :mod:`smart_panel.core.fonts`: the runner builds one registry,
 hands it to every render frame as ``frame.icons`` and forwards its warnings to the
@@ -64,9 +66,10 @@ class IconRegistry:
     """Resolve icons and cache them by (name, size) and source identity.
 
     A cache entry also remembers the resolved file's identity (mtime and size, or
-    ``None`` while it does not exist), so an icon file that is replaced or created
-    at the same path is re-read on the next lookup instead of serving the generic
-    fallback until a restart.
+    ``None`` while it does not exist). A *successful* resolution is trusted while
+    that identity is unchanged; a *failed* one is re-read on every lookup, so an
+    icon file repaired or created at the same path resolves again instead of
+    serving the generic fallback until a restart.
 
     Args:
         directory: Directory of bundled PNGs; defaults to :data:`ICON_DIR`.
@@ -84,6 +87,7 @@ class IconRegistry:
         self.warnings: list[dict[str, Any]] = []
         self._cache: dict[tuple[str, int], tuple[Image.Image, bool, tuple[int, int] | None]] = {}
         self._generic: dict[int, Image.Image] = {}
+        self._reported: dict[str, tuple[dict[str, Any], tuple[int, int] | None]] = {}
 
     # ----------------------------------------------------------------- resolve
 
@@ -113,10 +117,14 @@ class IconRegistry:
     ) -> tuple[Image.Image, bool]:
         """Return ``(image, ok)`` for an icon; ``ok`` is False for the generic one.
 
-        The cache is keyed by ``(name, size)`` and the resolved file's identity, so
-        a file replaced or created at the same path is re-read rather than serving
-        the fallback the first failure cached. An icon that resolves again drops
-        its entry from :attr:`warnings` (T105).
+        The cache is keyed by ``(name, size)``. A *successful* resolution is served
+        from the cache while the resolved file's stamp (mtime and size) is unchanged;
+        a *failed* resolution does not trust that stamp and re-reads the file on every
+        call, so an icon repaired at the same path — including a same-byte-length
+        repair inside one timestamp tick — resolves again rather than serving the
+        fallback the first failure cached. An icon that resolves again drops its entry
+        from :attr:`warnings`, and a failure that simply repeats is not re-notified
+        while nothing about it has changed (T105).
         """
         requested = str(name_or_path or "")
         pixels = max(1, int(size))
@@ -124,12 +132,18 @@ class IconRegistry:
         path = self.resolve(requested)
         stamp = self._stamp(path)
         cached = self._cache.get(key)
-        if cached is not None and cached[2] == stamp:
+        if cached is not None and cached[1] and cached[2] == stamp:
+            # Only a cached *success* may take the identity fast path. The stamp
+            # ``(mtime_ns, size)`` is not a complete identity — a file replaced at the
+            # same byte length inside one coarse-clock tick keeps it — so a cached
+            # failure is never trusted: the file is re-read on every lookup until it
+            # resolves. A broken icon is the rare, transient case; a working one is
+            # the hot path, and it is unchanged.
             return cached[0], cached[1]
         if path is None:
             image = self.generic(pixels)
             ok = False
-            self._warn(requested, None, "no bundled icon or file with that name")
+            self._warn(requested, None, "no bundled icon or file with that name", stamp)
         else:
             try:
                 with Image.open(path) as opened:
@@ -144,7 +158,7 @@ class IconRegistry:
             except Exception as exc:  # an unreadable file must not break a frame
                 image = self.generic(pixels)
                 ok = False
-                self._warn(requested, path, f"unusable icon file: {exc}")
+                self._warn(requested, path, f"unusable icon file: {exc}", stamp)
         if ok:
             self._clear(requested)  # it resolves now; an earlier warning is stale
         self._cache[key] = (image, ok, stamp)
@@ -178,11 +192,14 @@ class IconRegistry:
 
     @staticmethod
     def _stamp(path: Path | None) -> tuple[int, int] | None:
-        """The resolved file's identity (mtime and size), or ``None`` if absent.
+        """The resolved file's identity (mtime and size), or ``None`` when it is absent.
 
-        This is what makes a cached failure recoverable: a file written at the same
-        path changes at least its size or its mtime, so the stale entry is discarded
-        and the icon is re-read.
+        The stamp is a fast path only, and only for a *success* (see
+        :meth:`get_with_status`). It is not a complete identity: on a coarse
+        filesystem clock two writes microseconds apart can share one ``st_mtime_ns``,
+        so a same-byte-length change at the same path can leave the stamp unchanged.
+        A cached *failure* therefore never relies on it — the file is re-read — which
+        is what makes a repaired icon recoverable at any timestamp granularity.
         """
         if path is None:
             return None
@@ -192,7 +209,9 @@ class IconRegistry:
             return None
         return (stat.st_mtime_ns, stat.st_size)
 
-    def _warn(self, icon: str, path: Path | None, reason: str) -> None:
+    def _warn(
+        self, icon: str, path: Path | None, reason: str, stamp: tuple[int, int] | None
+    ) -> None:
         event: dict[str, Any] = {
             "event": "icon_unusable",
             "icon": icon,
@@ -202,11 +221,21 @@ class IconRegistry:
         # One warning per icon: a repeated failure replaces its own earlier entry
         # rather than accumulating duplicates, so ``status`` lists each unusable
         # icon once and the list cannot grow without bound.
+        #
+        # A still-failing file is re-read on every lookup (see ``get_with_status``),
+        # so the *same* condition — the same icon, path and reason, with the file
+        # unchanged since the last report — is not notified again: ``status`` already
+        # lists it and the log would otherwise gain one line per frame. A genuinely
+        # different condition (another file state, path or reason) is a new event and
+        # still notifies.
+        repeated = self._reported.get(icon) == (event, stamp)
         self._clear(icon)
         self.warnings.append(event)
-        if self._notify is not None:
+        self._reported[icon] = (event, stamp)
+        if self._notify is not None and not repeated:
             self._notify(event)
 
     def _clear(self, icon: str) -> None:
         """Drop any warning for ``icon`` (it resolves again, or is re-reported)."""
         self.warnings[:] = [entry for entry in self.warnings if entry.get("icon") != icon]
+        self._reported.pop(icon, None)
