@@ -33,6 +33,7 @@ import tempfile
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from PIL import Image as PILImage
@@ -58,6 +59,14 @@ QUEUE_CAP = 50
 
 class CliHost:
     """A CLI host pointed at a runner with a file sink and a fake clock."""
+
+    #: The CLI's own bounded wait for a detached runner's first frame.
+    START_TIMEOUT_S = 60
+    #: How long the host itself keeps waiting for that runner once the CLI's
+    #: bound has expired (a child still starting under load is not a dead one).
+    START_GRACE_S = 60
+    #: How long ``stop`` waits for the runner to release its single-instance lock.
+    STOP_TIMEOUT_S = 60
 
     def __init__(self, base: Path, home: Path) -> None:
         self.base = base
@@ -165,22 +174,154 @@ class CliHost:
         self.clock.write_text(f"{value}\n", encoding="utf-8")
 
     def start(self) -> dict:
-        return self.ok(
-            "--json",
-            "--timeout",
-            "15",
-            "start",
-            "--sink",
-            "files",
-            "--files-dir",
-            str(self.frames),
-            "--clock-file",
-            str(self.clock),
-            timeout=45,
-        )
+        """Start the runner and wait until it is actually publishing frames.
+
+        The CLI's own detached-start wait is bounded (``START_TIMEOUT_S``); when
+        it expires the host keeps waiting for the runner the CLI detached
+        (``START_GRACE_S``). The two waits are separate because the CLI's bound
+        expiring does not mean the child died — the CLI cannot tell the two
+        apart, and a child still importing under a starved CI host comes up
+        moments later.
+
+        Why the bound is 60 s rather than the 30 s the sibling e2e hosts use:
+        macos-latest jobs have been observed to starve a *render worker* for over
+        25 s (``test_plugin_isolation`` fails waiting 25 s for a first render),
+        and the detached runner pays the same starvation before it can open its
+        control socket — 15 s was not enough (see the failing-run URLs in the
+        pull request). Only when neither wait sees a runner does ``start`` fail,
+        with the pid file, the runtime listing and the log tail attached: the
+        detached runner discards its stderr, so a bare ``timeout`` cannot say
+        whether it died or was still coming up.
+        """
+        try:
+            return self.ok(
+                "--json",
+                "--timeout",
+                str(self.START_TIMEOUT_S),
+                "start",
+                "--sink",
+                "files",
+                "--files-dir",
+                str(self.frames),
+                "--clock-file",
+                str(self.clock),
+                timeout=self.START_TIMEOUT_S + 30,
+            )
+        except AssertionError as exc:
+            late = self.wait_for_runner(self.START_GRACE_S)
+            if late is not None:
+                return late
+            raise AssertionError(f"{exc}\n{self._start_diagnostic()}") from exc
+
+    def wait_for_runner(self, timeout: float) -> dict | None:
+        """Wait until a runner answers ``status`` with a frame already sent.
+
+        Returns the first such ``status`` payload, or ``None`` when nothing
+        answers for ``timeout`` seconds. A no-panel runner up but short of its
+        first frame is not enough: ``start`` must not return before frames flow,
+        exactly as the CLI's own wait requires.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                payload, code = self.data("--json", "status", timeout=30)
+            except (subprocess.TimeoutExpired, json.JSONDecodeError):
+                time.sleep(0.2)
+                continue
+            if code == 0:
+                data = payload.get("data") or {}
+                frames = data.get("frames") or {}
+                if int(frames.get("sent") or 0) > 0:
+                    return data
+            time.sleep(0.2)
+        return None
+
+    def _start_diagnostic(self) -> str:
+        """What the runner left behind when ``start`` never saw it.
+
+        A start that never answers the control socket is either a runner that
+        exited (a lock conflict, an invalid config, an import error) or one still
+        coming up under load; the runtime listing, the pid file and the log are
+        what tell those apart after the fact, without a re-run.
+        """
+        pid = self.runtime / "runner.pid"
+        log = self.home / "runner.log"
+        try:
+            entries = sorted(path.name for path in self.runtime.iterdir())
+        except OSError as exc:  # pragma: no cover - the runtime always exists here
+            entries = [f"<unreadable: {exc}>"]
+        size = log.stat().st_size if log.exists() else 0
+        lines = [
+            f"start diagnostic: runtime={self.runtime} entries={entries}",
+            f"                  runner.pid exists={pid.exists()} ({pid})",
+            f"                  runner.log exists={log.exists()} size={size} ({log})",
+        ]
+        if pid.exists():
+            lines.append(f"  runner.pid={pid.read_text(encoding='utf-8').strip()!r}")
+        if log.exists():
+            tail = log.read_text(encoding="utf-8", errors="replace").splitlines()[-15:]
+            lines.append("  runner.log tail:")
+            lines.extend(f"    {line}" for line in tail)
+        return "\n".join(lines)
 
     def stop(self) -> subprocess.CompletedProcess[str]:
-        return self.cli("--json", "stop", timeout=30)
+        """Stop the runner, waiting generously for it to release its lock.
+
+        ``cmd_stop`` reports success only once the runner's process is really
+        gone — its pid file cleared, which is what frees the single-instance
+        lock. That wait defaults to 10 s, and a starved CI job can take longer
+        than that to join the runner's threads. When it expires the *next*
+        ``start`` hands its child a lock that is still held, the child exits on
+        the conflict, and the parent reports only "the runner never answered the
+        control socket" — observed on macos-latest in runs 38521533126 and
+        38522763272, both on the second start of a test that starts, stops and
+        starts again with almost nothing in between. The generous bound is what
+        keeps that window shut.
+
+        The exit code is the caller's to check: a teardown that stops an
+        already-stopped runner gets the normal exit 3.
+        """
+        return self.cli(
+            "--json", "--timeout", str(self.STOP_TIMEOUT_S), "stop",
+            timeout=self.STOP_TIMEOUT_S + 30,
+        )
+
+    def stop_ok(self) -> None:
+        """``stop`` for a runner that is running; requires that it is gone.
+
+        The exit code alone is not enough. A runner that is alive but silent —
+        starved, or part-way through its own teardown — is reported
+        ``runner_not_running`` (exit 3) while it still holds the single-instance
+        lock, and the next ``start`` then hands its child a conflict the child
+        dies on, which the parent reports only as ``timeout``. So the check is
+        the end state: nothing live behind the pid file.
+        """
+        proc = self.stop()
+        pid_file = self.runtime / "runner.pid"
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and self._pid_alive(pid_file):
+            time.sleep(0.05)
+        assert not self._pid_alive(pid_file), (
+            f"a runner is still alive behind {pid_file} after stop "
+            f"(exit {proc.returncode}: {proc.stdout}{proc.stderr})"
+        )
+
+    @staticmethod
+    def _pid_alive(pid_file: Path) -> bool:
+        """Whether ``pid_file`` names a live process (a missing file is not)."""
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:  # pragma: no cover - another account's runner
+            return True
+        except OSError:  # pragma: no cover - an out-of-range pid
+            return False
+        return True
 
     def frame(self) -> PILImage.Image:
         with PILImage.open(self.frames / "latest.png") as image:
@@ -205,6 +346,31 @@ class CliHost:
                 last = self.frame()
                 if predicate(last):
                     return last
+            time.sleep(0.05)
+        raise AssertionError(f"{what} never appeared within {timeout}s (last={last})")
+
+    def wait_for(
+        self,
+        produce: Callable[[], Any],
+        predicate: Callable[[Any], bool],
+        *,
+        timeout: float = 15.0,
+        what: str = "the value",
+    ) -> Any:
+        """Poll ``produce`` until ``predicate`` accepts its result.
+
+        For an assertion that depends on an effect the runner applies
+        asynchronously — a fake-clock step the plugin only settles on its next
+        render tick — the effect has to be waited for, not assumed to have
+        happened between two commands. ``produce`` re-issues the read each
+        attempt; the value that passed is returned.
+        """
+        deadline = time.monotonic() + timeout
+        last: Any = None
+        while time.monotonic() < deadline:
+            last = produce()
+            if predicate(last):
+                return last
             time.sleep(0.05)
         raise AssertionError(f"{what} never appeared within {timeout}s (last={last})")
 
@@ -338,8 +504,17 @@ def test_a_timed_out_alert_is_in_history_and_counted_once(host: CliHost) -> None
     )
 
     host.set_clock(61.0)
-    history = host.ok("--json", "alert", "list", "--state", "timed_out")["alerts"]
-    assert [alert["id"] for alert in history] == ["ups-1"], history
+    # The clock step is settled by the plugin's per-frame render tick
+    # (``AlertManager.tick``); ``alert list`` only reads history and settles
+    # nothing, so a loaded runner can answer the list before that tick lands and
+    # report no row yet (observed on macos-latest, where the list came back
+    # ``[]``). Wait for the effect instead of reading the instant the clock file
+    # changes.
+    history = host.wait_for(
+        lambda: host.ok("--json", "alert", "list", "--state", "timed_out")["alerts"],
+        lambda alerts: [alert["id"] for alert in alerts] == ["ups-1"],
+        what="the timed-out alert in history",
+    )
     assert history[0]["outcome"] == "timed_out"
 
     show = host.ok("--json", "alert", "show")
@@ -372,7 +547,7 @@ def test_a_bad_severity_exits_2_and_a_message_is_truncated(host: CliHost) -> Non
 def test_a_push_while_the_runner_is_down_is_spooled_and_replayed(host: CliHost) -> None:
     host.start()
     host.wait_for_frame(lambda frame: frame.getpixel((1900, 10)) == MAIN_BG)
-    host.stop()
+    host.stop_ok()
 
     data = host.ok("--json", "alert", "push", "--severity", "warning", "--message", "while down")
     assert data["saved_for_later"] is True
@@ -392,7 +567,7 @@ def test_a_push_while_the_runner_is_down_is_spooled_and_replayed(host: CliHost) 
 def test_a_spooled_alert_older_than_its_duration_is_expired_and_missed(host: CliHost) -> None:
     host.start()
     host.wait_for_frame(lambda frame: frame.getpixel((1900, 10)) == MAIN_BG)
-    host.stop()
+    host.stop_ok()
 
     pending = host.home / "spool-pending"
     pending.mkdir(parents=True, exist_ok=True)
@@ -414,7 +589,7 @@ def test_a_spooled_alert_older_than_its_duration_is_expired_and_missed(host: Cli
 def test_a_flood_of_alerts_keeps_the_cap_logs_every_discard_and_keeps_frames(host: CliHost) -> None:
     host.start()
     host.wait_for_frame(lambda frame: frame.getpixel((1900, 10)) == MAIN_BG)
-    host.stop()
+    host.stop_ok()
 
     pending = host.home / "spool-pending"
     pending.mkdir(parents=True, exist_ok=True)
