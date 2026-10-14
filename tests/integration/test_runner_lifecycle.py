@@ -24,7 +24,8 @@ pipeline are exercised end to end on a host with no panel attached:
   ``timeout`` and a second ``start`` is exit 6 ``conflict`` rather than a
   detached child quietly dying on the lock the frozen runner still holds; a
   ``logs --follow`` against the same frozen runner is exit 1 ``timeout`` too,
-  not exit 3;
+  not exit 3; a socket that **accepts and then resets** (a runner dying with the
+  socket up) is exit 1 ``timeout`` as well, not exit 3;
 * a ``start`` whose detached child dies (here: the lock is held, so the child
   exits 6) reports the child — the conflict code and the child's own stderr —
   instead of a bare "no first frame" timeout;
@@ -38,9 +39,12 @@ import json
 import os
 import shutil
 import signal
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -533,6 +537,45 @@ def test_a_follow_of_a_silent_runner_is_not_reported_as_gone(host: CliHost) -> N
 
     proc = host.stop()
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_a_resetting_socket_is_not_reported_as_gone(host: CliHost) -> None:
+    """A socket that accepts and then resets is not "no runner" either.
+
+    The third shape beside the ``SIGSTOP`` silence and a clean close: the socket
+    *accepted* the connection, so a runner is there while it dies with the
+    socket up, and the client's send or read meets ``EPIPE``/``ECONNRESET``.
+    ``status`` must report the documented ``timeout`` (exit 1), not
+    ``runner_not_running`` (exit 3) — the code that told a second ``start`` the
+    path was free while a live runner still held the lock.
+    """
+    host.runtime.mkdir(parents=True, exist_ok=True)
+    os.chmod(host.runtime, 0o755)
+    path = host.runtime / "control.sock"
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(str(path))
+    sock.listen(1)
+
+    def serve() -> None:
+        try:
+            connection, _ = sock.accept()
+        except OSError:
+            return
+        # SO_LINGER zero is an abortive close: the client sees a reset, not EOF.
+        connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        connection.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        status, proc = host.data("--json", "--timeout", "1", "status")
+    finally:
+        sock.close()
+        thread.join(timeout=1.0)
+
+    assert proc.returncode == protocol.EXIT_CODES["timeout"] == 1, proc.stdout + proc.stderr
+    assert status["error"]["code"] == "timeout", status
+    assert not status.get("ok", True)
 
 
 def test_a_start_whose_child_loses_the_lock_names_the_child(host: CliHost) -> None:
