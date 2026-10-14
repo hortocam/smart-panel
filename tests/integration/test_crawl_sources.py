@@ -241,6 +241,27 @@ class CliHost:
             time.sleep(0.05)
         raise AssertionError(f"{what} never appeared within {timeout}s (last={last})")
 
+    def wait_for_new_frame(self, after_ns: int, *, timeout: float = 20.0) -> None:
+        """Wait for ``latest.png`` to be rewritten past ``after_ns``.
+
+        The runner re-sends frames continuously, so the file's mtime is the
+        observable effect of "frames keep flowing". Sampling it twice and
+        comparing cannot tell a stopped runner from a host that starved the
+        compositor for the length of the window between the two samples (seen on
+        macos-latest in ``test_refreshing_does_not_interrupt_the_scroll``), so
+        the check waits for the effect instead.
+        """
+        path = self.frames / "latest.png"
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if path.exists() and path.stat().st_mtime_ns != after_ns:
+                return
+            time.sleep(0.05)
+        raise AssertionError(
+            f"no frame was written after {after_ns} within {timeout}s "
+            "(the runner stopped sending frames)"
+        )
+
     def wait_for_status(
         self,
         predicate: Callable[[dict], bool],
@@ -333,8 +354,11 @@ def test_refreshing_does_not_interrupt_the_scroll(host: CliHost) -> None:
         lambda status: _crawl_detail(status)["sources"]["news"]["fetches"] >= 2,
         what="the second refresh",
     )
-    after = (host.frames / "latest.png").stat().st_mtime_ns
-    assert after != before, "the runner stopped sending frames across a refresh"
+    # Frames must keep flowing across the refresh. Wait for the next one instead
+    # of sampling ``latest.png`` twice: a starved CI host can leave the file
+    # untouched for as long as a CLI round trip takes, and that is not the same
+    # as "the runner stopped sending frames" (observed on macos-latest).
+    host.wait_for_new_frame(before)
     assert host.status()["state"] == "running"
 
 
