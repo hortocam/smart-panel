@@ -21,9 +21,17 @@ from smart_panel.core.control import peercred
 # 2**32 - 2 (measured on macos-latest / Python 3.11.9).
 DARWIN_NOBODY_ID = 4294967294
 
-_DARWIN_NOBODY = pwd.struct_passwd(
-    ("nobody", "*", DARWIN_NOBODY_ID, DARWIN_NOBODY_ID, "", "/var/empty", "/usr/bin/false")
-)
+
+def _darwin_nobody() -> pwd.struct_passwd:
+    """The passwd entry Darwin reports for ``nobody``: an unsigned 2**32 - 2.
+
+    Built per call, not at import: a structseq instance held in a module global is
+    cleared during interpreter shutdown while pytest's threads are still winding
+    down, which CPython 3.11 reports as "Exception ignored in tp_clear".
+    """
+    return pwd.struct_passwd(
+        ("nobody", "*", DARWIN_NOBODY_ID, DARWIN_NOBODY_ID, "", "/var/empty", "/usr/bin/false")
+    )
 
 
 def _darwin_getgrouplist(user: str, group: int) -> list[int]:
@@ -41,7 +49,7 @@ def test_a_gid_darwin_cannot_represent_falls_back_to_the_primary_gid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The peer's own group is still checked when the group table cannot be read."""
-    monkeypatch.setattr(peercred.pwd, "getpwuid", lambda uid: _DARWIN_NOBODY)
+    monkeypatch.setattr(peercred.pwd, "getpwuid", lambda uid: _darwin_nobody())
     monkeypatch.setattr(peercred.os, "getgrouplist", _darwin_getgrouplist)
 
     assert peercred.get_peer_groups(DARWIN_NOBODY_ID, DARWIN_NOBODY_ID) == [DARWIN_NOBODY_ID]
