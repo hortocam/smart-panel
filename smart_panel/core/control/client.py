@@ -356,6 +356,8 @@ class ControlClient:
             # The follow's request rides the same established connection as a
             # one-shot's, so a send that raises EPIPE/ECONNRESET is the
             # close-after-accept class too, never a raw OSError out of stream().
+            # The split is kept uniform with call()/connect() even though the
+            # socket is blocking (so no timeout) by this point.
             if _is_silence(exc):
                 raise self._not_answering(exc) from exc
             raise self._closed_after_accept() from exc
@@ -363,12 +365,13 @@ class ControlClient:
             try:
                 reply = self._receive()
             except OSError as exc:
-                # The socket is blocking here, so this is the runner's socket
-                # being torn down under the follow (a reset), not the pinned
-                # clean EOF: a follow is ended normally by the runner *closing*
-                # the stream (exit 0), while a reset broke it. That is the same
-                # class as the one-shot request's reset (``timeout``, exit 1) —
-                # an errno does not change meaning because the socket streams.
+                # The socket is blocking now, so a teardown (EPIPE/ECONNRESET) is
+                # what reaches this, and it is not the pinned clean EOF: a follow
+                # is ended normally by the runner *closing* the stream (exit 0),
+                # while a reset broke it. That is the same class as the one-shot
+                # request's reset (``timeout``, exit 1) — an errno does not change
+                # meaning because the socket streams — on the same split the rest
+                # of the client uses, whether or not the read can time out.
                 if _is_silence(exc):
                     raise self._not_answering(exc) from exc
                 raise self._closed_after_accept() from exc
