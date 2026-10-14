@@ -30,19 +30,34 @@ def default_layout_for(instances: object) -> dict[str, list[dict[str, object]]]:
     Until every built-in exists, the default config may only reference instances
     that are actually registered, or it would not validate (T061). ``instances``
     is the set/iterable/mapping of configured instance names.
+
+    An overlay is kept only when *both* its instance and its target region are
+    present: the ``alerts`` overlay targets ``main``, which belongs to the
+    ``gauges`` instance (Phase 6). Keeping an overlay whose target region was
+    filtered out would make the fresh config invalid
+    ("overlay 'main': target region does not exist"), so the filter is applied to
+    the whole reference, not just the overlay's own instance (T072).
     """
     present = set(instances)  # type: ignore[arg-type]
     layout = default_layout()
+    regions = [region for region in layout.regions if region.instance in present]
+    region_names = {region.name for region in regions}
     return {
         "regions": [
-            {"name": r.name, "x": r.x, "y": r.y, "w": r.w, "h": r.h, "instance": r.instance}
-            for r in layout.regions
-            if r.instance in present
+            {
+                "name": r.name,
+                "x": r.x,
+                "y": r.y,
+                "w": r.w,
+                "h": r.h,
+                "instance": r.instance,
+            }
+            for r in regions
         ],
         "overlays": [
             {"region": o.region, "instance": o.instance, "z": o.z}
             for o in layout.overlays
-            if o.instance in present
+            if o.instance in present and o.region in region_names
         ],
     }
 
