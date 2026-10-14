@@ -111,10 +111,13 @@ class CliHost:
         self.clock.write_text("0\n", encoding="utf-8")
 
     def start(self) -> subprocess.CompletedProcess[str]:
+        # The CLI detaches a ``run`` child and waits ``max(--timeout, 10)`` for
+        # its first frame; 15 s was too tight for a starved CI leg, so the host
+        # uses the 30 s the sibling e2e hosts settled on.
         return self.cli(
             "--json",
             "--timeout",
-            "15",
+            "30",
             "start",
             "--sink",
             "files",
@@ -122,7 +125,7 @@ class CliHost:
             str(self.frames),
             "--clock-file",
             str(self.clock),
-            timeout=45,
+            timeout=60,
         )
 
     def stop(self) -> subprocess.CompletedProcess[str]:
@@ -173,9 +176,11 @@ def _wait_for_extrema(
 
 
 def test_text_set_empty_blanks_the_frame(host: CliHost) -> None:
-    started, proc = host.data("--json", "--timeout", "15", "start", "--sink", "files",
+    # The same 30 s ``start`` bound as ``CliHost.start`` (and the sibling e2e
+    # hosts): 15 s was too tight for a starved CI leg.
+    started, proc = host.data("--json", "--timeout", "30", "start", "--sink", "files",
                               "--files-dir", str(host.frames), "--clock-file", str(host.clock),
-                              timeout=45)
+                              timeout=60)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert started["data"]["state"] == "running"
 
