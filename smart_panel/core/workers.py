@@ -136,6 +136,10 @@ class RenderWorker:
             with self._lock:
                 if self._state != InstanceState.DISABLED:
                     self._state = InstanceState.STALLED
+                    # ``status`` shows a stalled instance "with the last error"
+                    # (T111), and the worker never got a render result to record,
+                    # so the overrun itself is the error.
+                    self._last_error = f"render exceeded the {self._hard:g} s hard deadline"
             return True
         return False
 
