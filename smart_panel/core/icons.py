@@ -19,6 +19,13 @@ inside one timestamp tick — resolves again, and when it does its warning is dr
 from :attr:`IconRegistry.warnings`: ``status`` lists the icons that are unusable
 *now*, not the ones that once were.
 
+The stamp is a fast path, not a complete identity. A *successful* resolution keeps
+serving its decoded image while the stamp holds, so a same-byte-length change inside
+one timestamp tick — measured on this filesystem, two writes microseconds apart shared
+one ``st_mtime_ns``; writes 3 ms apart differed — is not noticed until the stamp next
+moves. No bounded-cadence re-verification of a cached success is performed on this hot
+path; that is stated as measured behaviour here, not as a guarantee.
+
 The module mirrors :mod:`smart_panel.core.fonts`: the runner builds one registry,
 hands it to every render frame as ``frame.icons`` and forwards its warnings to the
 structured log, so a missing icon is visible in ``status`` exactly like a missing
@@ -70,6 +77,10 @@ class IconRegistry:
     that identity is unchanged; a *failed* one is re-read on every lookup, so an
     icon file repaired or created at the same path resolves again instead of
     serving the generic fallback until a restart.
+
+    The identity is a stamp, not a hash: a same-byte-length change inside one coarse
+    timestamp tick keeps a cached *success* being served (a measured limitation, not a
+    guarantee — see :meth:`_stamp`).
 
     Args:
         directory: Directory of bundled PNGs; defaults to :data:`ICON_DIR`.
@@ -125,6 +136,11 @@ class IconRegistry:
         fallback the first failure cached. An icon that resolves again drops its entry
         from :attr:`warnings`, and a failure that simply repeats is not re-notified
         while nothing about it has changed (T105).
+
+        The stamp is not a complete identity (see :meth:`_stamp`). A cached *success*
+        trusts it fully: a same-byte-length change inside one timestamp tick is served
+        from the cache until the stamp next changes — a measured limitation, mitigated
+        only by the fact that a cached failure is always re-read.
         """
         requested = str(name_or_path or "")
         pixels = max(1, int(size))
@@ -138,7 +154,11 @@ class IconRegistry:
             # same byte length inside one coarse-clock tick keeps it — so a cached
             # failure is never trusted: the file is re-read on every lookup until it
             # resolves. A broken icon is the rare, transient case; a working one is
-            # the hot path, and it is unchanged.
+            # the hot path.
+            #
+            # The success side trusts the stamp fully (no bounded-cadence re-verify):
+            # a same-byte-length change inside one tick is served until the stamp moves.
+            # That is a measured limitation, documented in the module docstring.
             return cached[0], cached[1]
         if path is None:
             image = self.generic(pixels)
@@ -199,7 +219,10 @@ class IconRegistry:
         filesystem clock two writes microseconds apart can share one ``st_mtime_ns``,
         so a same-byte-length change at the same path can leave the stamp unchanged.
         A cached *failure* therefore never relies on it — the file is re-read — which
-        is what makes a repaired icon recoverable at any timestamp granularity.
+        is what makes a repaired icon recoverable at any timestamp granularity. A
+        cached *success* still trusts it, so such a change is not noticed until the
+        stamp next moves; that is measured behaviour on this filesystem, not a
+        guarantee (nothing re-verifies a cached success on a bounded cadence).
         """
         if path is None:
             return None

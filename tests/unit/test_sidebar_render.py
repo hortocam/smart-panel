@@ -57,6 +57,7 @@ from smart_panel.plugins.sidebar.render import (
 )
 from smart_panel.sdk.context import FrameContext, ReadOnlyBus
 from smart_panel.sdk.plugin import Image as RenderImage
+from smart_panel.sdk.plugin import Unchanged
 from smart_panel.sdk.settings import validate
 from smart_panel.sdk.testing import PluginHarness
 
@@ -295,7 +296,9 @@ def test_a_recovered_icon_drops_its_fallback_from_status(tmp_path: Path) -> None
 
     The sidebar's own region cache is refreshed on a settings change (``forget``),
     which is when the icons are re-resolved: an icon fixed by then must leave no
-    stale ``warnings`` entry behind.
+    stale ``warnings`` entry behind. A cached region also re-checks its fallbacks on
+    its own (see the renderer below), so a settings change is one way to force it,
+    not the only one.
     """
     icon = tmp_path / "mail.png"
     icon.write_bytes(b"nope")
@@ -326,6 +329,89 @@ def test_a_recovered_icon_drops_its_fallback_from_status(tmp_path: Path) -> None
         )
     finally:
         harness.stop()
+
+
+def test_a_cached_region_re_checks_a_fallback_so_a_repair_shows_on_the_next_frame(
+    tmp_path: Path,
+) -> None:
+    """A repaired icon drops from ``status`` on the next frame, not the next rebuild.
+
+    The region image is cached until something *visible* changes, so ``_draw`` — and
+    with it the icon resolution — is skipped while the sidebar is static. The renderer
+    therefore re-resolves the icons it currently records as unusable before it serves
+    a cached frame: the repair is noticed, the region is rebuilt so the real icon is
+    drawn, and ``status`` stops listing the old warning without waiting for a settings
+    change or a restart.
+    """
+    icon = tmp_path / "mail.png"
+    icon.write_bytes(b"nope")
+    harness = PluginHarness(
+        SidebarPlugin,
+        {"entries": [_entry(0, icon=str(icon)).to_dict()]},
+        size=REGION,
+    )
+    try:
+        frame = FrameContext(
+            size=REGION,
+            now=0.0,
+            wall=0.0,
+            frame_index=1,
+            fonts=FontRegistry(),
+            icons=IconRegistry(),
+            bus=ReadOnlyBus(harness.bus),
+            min_text_px=24,
+        )
+        harness.plugin.render(frame)
+        assert harness.state()["warnings"], "the broken icon must be listed while it is broken"
+
+        PILImage.new("RGBA", (64, 64), (10, 20, 30, 255)).save(icon)
+
+        # Same frame, same settings: nothing *visible* changed, so the region key is
+        # unchanged and the cache would answer ``Unchanged`` without the re-check.
+        result = harness.plugin.render(frame)
+        assert isinstance(result, RenderImage), (
+            "a repaired icon must rebuild the region so the real icon is drawn"
+        )
+        assert harness.state()["warnings"] == [], (
+            "a repaired icon must drop out of status on the next frame, not the next rebuild"
+        )
+
+        # And the rebuilt region is cached again: a settled sidebar costs no new build.
+        assert isinstance(harness.plugin.render(frame), Unchanged)
+    finally:
+        harness.stop()
+
+
+def test_documented_limitation_a_cached_success_trusts_its_stamp(tmp_path: Path) -> None:
+    """A cached *success* trusts the ``(mtime_ns, size)`` stamp — including its blind spot.
+
+    The stamp is not a complete identity: measured on this filesystem, two writes
+    microseconds apart can share one ``st_mtime_ns``. A same-byte-length corruption
+    whose stamp is unchanged therefore keeps serving the previously decoded image (the
+    stamp is pinned explicitly here so the test does not depend on the host clock's
+    granularity). There is no bounded-cadence re-verification of a cached success, so
+    this is documented, measured behavior rather than a guarantee; as soon as the stamp
+    changes the failure *is* re-read and reported.
+    """
+    registry = IconRegistry()
+    icon = tmp_path / "mail.png"
+    PILImage.new("RGBA", (64, 64), (10, 20, 30, 255)).save(icon)
+    good = icon.read_bytes()
+    decoded = registry.get_with_status(str(icon), 64)[0].tobytes()
+    stamp = icon.stat()
+    pinned = (stamp.st_atime_ns, stamp.st_mtime_ns)  # the successful read's own stamp
+
+    icon.write_bytes(b"\x00" * len(good))  # same byte length, no longer a PNG
+    os.utime(icon, ns=pinned)
+    stale_image, ok = registry.get_with_status(str(icon), 64)
+    assert ok is True and stale_image.tobytes() == decoded, (
+        "documented limitation: an unchanged stamp serves the cached success"
+    )
+
+    os.utime(icon, ns=(pinned[0] + 1_000_000, pinned[1] + 1_000_000))  # the stamp changes
+    assert registry.get_with_status(str(icon), 64)[1] is False, (
+        "a changed stamp must be re-read, so a corruption is reported once the stamp moves"
+    )
 
 
 # ------------------------------------------------------- the entry model (T106)

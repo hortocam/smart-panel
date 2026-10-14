@@ -10,8 +10,9 @@ What one row shows:
 * the icon at the left, resolved through ``frame.icons`` (``core/icons.py``); an
   unusable icon falls back to the generic icon and is recorded in
   :attr:`SidebarRenderer.fallbacks`, which the plugin lists in ``status`` (the
-  entry is dropped again when the icon resolves, so ``status`` names only the
-  icons that are unusable now);
+  entry is dropped again when the icon resolves — a cached region re-checks its
+  fallbacks on the next frame — so ``status`` names only the icons that are
+  unusable now);
 * the label (at most 12 characters, truncated to fit) next to it, and
 * a count chip on the right: ``chip_bg``/``chip_fg`` by default, the missed
   alert's severity colour for the built-in alert entry, ``?`` while the count is
@@ -164,7 +165,13 @@ def icon_box(index: int, entry_count: int, size: tuple[int, int]) -> tuple[int, 
 
 
 class SidebarRenderer:
-    """Draw the sidebar into one region-sized image, cached until it changes."""
+    """Draw the sidebar into one region-sized image, cached until it changes.
+
+    The cache is not blindly keyed on the visible content: a cached frame re-checks
+    the icons it recorded as unusable (see :meth:`_refresh_fallbacks`), so a file
+    repaired on disk is picked up — and its warning dropped — on the next frame rather
+    than at the next rebuild.
+    """
 
     def __init__(self) -> None:
         self._key: tuple[Any, ...] | None = None
@@ -174,8 +181,8 @@ class SidebarRenderer:
         self.fallbacks: dict[str, str] = {}
         """Icons that fell back to the generic image this run (name -> reason).
 
-        Cleared per icon when it resolves again, so it names only the icons that
-        are unusable now.
+        Cleared per icon when it resolves again — on a rebuild *or* by the cached
+        frame's fallback re-check — so it names only the icons that are unusable now.
         """
         self.builds = 0
         """How many region images have been rasterised (a cache-miss counter)."""
@@ -184,6 +191,41 @@ class SidebarRenderer:
         """Drop the cached image (a settings change or a stop)."""
         self._key = None
         self._image = None
+
+    def _refresh_fallbacks(
+        self, frame: Any, rows: Sequence[tuple[SidebarEntry, SidebarReading]]
+    ) -> bool:
+        """Re-resolve the icons this region currently records as unusable.
+
+        A cached region skips :meth:`_draw`, and with it the icon resolution, so a file
+        repaired on disk would otherwise keep the generic icon — and its ``status``
+        warning — until something else forced a rebuild. Only the icons already in
+        :attr:`fallbacks` are probed here, so a healthy region does no extra work, and a
+        cached *failure* is re-read on every lookup by design anyway.
+
+        Returns:
+            True when at least one of them resolves again, so the caller rebuilds the
+            region (which redraws the real icon and drops the warning).
+        """
+        icons = getattr(frame, "icons", None)
+        getter = getattr(icons, "get_with_status", None)
+        if not callable(getter) or not self.fallbacks:
+            return False
+        size = (int(frame.size[0]), int(frame.size[1]))
+        changed = False
+        for index, (entry, _reading) in enumerate(rows):
+            name = str(entry.icon)
+            if name not in self.fallbacks:
+                continue
+            _left, _top, pixels = icon_box(index, len(rows), size)
+            try:
+                _image, ok = getter(name, pixels)
+            except Exception:  # a broken registry must not break a frame
+                continue
+            if ok:
+                self.fallbacks.pop(name, None)
+                changed = True
+        return changed
 
     # ----------------------------------------------------------------- render
 
@@ -194,7 +236,17 @@ class SidebarRenderer:
         readings: Sequence[SidebarReading],
         settings: Mapping[str, Any],
     ) -> Any:
-        """One render result for the region: ``Unchanged`` or ``Image``."""
+        """One render result for the region: ``Unchanged`` or ``Image``.
+
+        The region key covers the entry fields and readings the rows draw, so an
+        unchanged key normally means ``Unchanged``. It does not cover the *icon files*
+        themselves: the recorded fallbacks are re-checked before the cache is trusted,
+        so an icon that recovered is redrawn at once (see :meth:`_refresh_fallbacks`),
+        while an icon file replaced, repaired differently or corrupted *after* a
+        successful draw is re-resolved at the region's next rebuild — any visible
+        change, a settings change or a restart (and see ``core/icons.py`` on the stamp's
+        limits).
+        """
         rows = list(zip(entries, readings, strict=False))
         now = float(getattr(frame, "now", 0.0) or 0.0)
         highlighted: list[bool] = []
@@ -230,7 +282,11 @@ class SidebarRenderer:
             str(settings.get("font")),
             int(getattr(frame, "min_text_px", 0) or 0),
         )
-        if self._key == key and self._image is not None:
+        if (
+            self._key == key
+            and self._image is not None
+            and not self._refresh_fallbacks(frame, rows)
+        ):
             return Unchanged()
 
         image = self._draw(frame, rows, highlighted, settings)
@@ -367,7 +423,8 @@ def _icon(frame: Any, name: str, pixels: int, renderer: SidebarRenderer) -> PILI
     """The icon image for ``name``, recording (or clearing) a generic fallback.
 
     An icon that resolves again drops its :attr:`SidebarRenderer.fallbacks` entry,
-    so the sidebar lists only the icons that are unusable now.
+    so the sidebar lists only the icons that are unusable now. A cached region never
+    reaches here: :meth:`SidebarRenderer._refresh_fallbacks` covers that case.
     """
     icons = getattr(frame, "icons", None)
     if icons is not None:
