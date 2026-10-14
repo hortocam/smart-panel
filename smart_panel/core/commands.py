@@ -369,7 +369,21 @@ def _plugin_instance_add(runner: Any, args: dict[str, Any]) -> dict[str, Any]:
     # so a name the loader never discovered is reported as ``invalid_input``
     # (exit 2) whatever else the caller sent.
     _guard_plugin_instances(runner, {name: {"plugin": plugin}})
-    instance = {"plugin": plugin, "enabled": True, "settings": dict(args.get("settings", {}) or {})}
+    # FR-006: the settings must be an object.  The coercion accepts anything
+    # ``dict(...)`` can consume (including a list of pairs); a value it cannot
+    # (``["not-a-pair"]``, a bare string, an int) is an invalid change, not an
+    # internal error, so it is reported as ``invalid_input`` (exit 2) naming the
+    # setting -- the same class the other F3 validators use.
+    raw_settings = args.get("settings", {}) or {}
+    try:
+        settings = dict(raw_settings)
+    except (TypeError, ValueError) as exc:
+        raise protocol.ProtocolError(
+            "invalid_input",
+            "plugin.instance.add needs a 'settings' object",
+            setting=f"plugins.{name}.settings",
+        ) from exc
+    instance = {"plugin": plugin, "enabled": True, "settings": settings}
     return runner.set_config(f"plugins.{name}", instance)
 
 
