@@ -284,8 +284,16 @@ def test_restart_returns_content(host: CliHost) -> None:
     # frame — a loaded macOS CI runner can take well over 10 s to bring one up.
     # 30 s matches the sibling e2e hosts' ``start`` bound; the wait stays
     # bounded, so a runner that never starts still fails.
+    #
+    # ``restart`` is the only stop->start of these hosts, so the CLI's internal
+    # worst case is the *sum* of the two waits — stop ``max(ctx.timeout, 10)``
+    # plus start ``max(ctx.timeout, DEFAULT_START_TIMEOUT_S)`` = 30 + 30, plus
+    # interpreter startup (``commands/runner.py:86-87``). The old 60 s subprocess
+    # bound sat flush with that; 90 s is the hosts' ``--timeout`` + 30 idiom
+    # applied to the two-phase command, and still bounds: a restart that never
+    # returns fails.
     restarted, proc = host.data(
-        "--json", "--timeout", "30", "restart", "--clock-file", str(host.clock), timeout=60
+        "--json", "--timeout", "30", "restart", "--clock-file", str(host.clock), timeout=90
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert restarted["data"]["state"] == "running"

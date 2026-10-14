@@ -123,6 +123,17 @@ DROPINS = {
 }
 
 
+# Every wait here polls a fresh CLI subprocess (``status``) or the frames file,
+# and each sample costs seconds on a starved host — 25 s was not enough: a render
+# worker left unscheduled on macos-latest (run 38521533126) had still not started
+# its first render when the stalled-instance wait expired. 60 s is the bound the
+# sibling e2e hosts already pair with their 30 s CLI ``start`` wait (their
+# subprocess waits are ``--timeout`` + 30; see 4ea0909 and PR #54), and it covers
+# both halves of this file's shape: the starved effect *and* the polling round
+# trips. It stays bounded: a runner that never reaches the state still fails.
+EFFECT_WAIT_S = 60.0
+
+
 class CliHost:
     """A CLI host pointed at a runner with a file sink and a fake clock."""
 
@@ -213,7 +224,20 @@ class CliHost:
         return self.ok("--json", "status")
 
     def set_clock(self, value: float) -> None:
+        self._clock_s = float(value)
         self.clock.write_text(f"{value}\n", encoding="utf-8")
+
+    def tick_clock(self, seconds: float = 5.0) -> None:
+        """Advance the fake clock the runner reads (used while polling a step).
+
+        A worker's hard deadline is measured from when its render *started* — a
+        fake-clock reading the test cannot observe from outside — so a single
+        ``set_clock`` step can miss it: a render that begins after the step has
+        its whole deadline ahead of a frozen clock and is never marked stalled.
+        Marching the clock while polling crosses the deadline whenever the render
+        actually starts.
+        """
+        self.set_clock(self._clock_s + float(seconds))
 
     def start(self) -> dict:
         return self.ok(
@@ -267,7 +291,7 @@ class CliHost:
         self,
         predicate: Callable[[PILImage.Image], bool],
         *,
-        timeout: float = 25.0,
+        timeout: float = EFFECT_WAIT_S,
         what: str = "the frame",
     ) -> PILImage.Image:
         deadline = time.monotonic() + timeout
@@ -284,12 +308,22 @@ class CliHost:
         self,
         predicate: Callable[[dict], bool],
         *,
-        timeout: float = 25.0,
+        timeout: float = EFFECT_WAIT_S,
         what: str = "the status",
+        on_poll: Callable[[], None] | None = None,
     ) -> dict:
+        """Poll ``runner.status`` until ``predicate`` accepts it.
+
+        ``on_poll`` runs before each read, so a wait whose effect is a fake-clock
+        step can drive that clock while it polls (see the stalled-instance wait):
+        each read is a fresh CLI subprocess, so a starved host costs seconds per
+        sample and the *effect* must not also be left to chance.
+        """
         deadline = time.monotonic() + timeout
         last: dict = {}
         while time.monotonic() < deadline:
+            if on_poll is not None:
+                on_poll()
             last = self.status()
             if predicate(last):
                 return last
@@ -357,10 +391,18 @@ def test_a_failing_plugin_affects_only_its_own_region(host: CliHost) -> None:
 
     # 2. The slow render crosses the 2 s hard deadline: ``stalled`` with the error,
     #    and the runner is still alive (it did not wait for the stuck thread).
+    #    ``check_deadlines`` measures from when the render *started* — a fake-clock
+    #    reading the test cannot see from outside, and one a starved runner may
+    #    not reach until well after this step. So march the fake clock while
+    #    polling (``tick_clock``) instead of stepping it once: a single step that
+    #    lands before the render starts would leave the deadline behind a frozen
+    #    clock, and the instance would never be marked stalled at all. The wait
+    #    stays bounded, so a runner that never renders still fails.
     host.set_clock(5.0)
     status = host.wait_for_status(
         lambda status: status["plugins"]["sleeper"]["state"] == "stalled",
         what="the stalled instance",
+        on_poll=host.tick_clock,
     )
     assert "hard deadline" in (status["plugins"]["sleeper"]["last_error"] or "")
     assert status["state"] == "running"
