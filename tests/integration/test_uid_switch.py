@@ -507,34 +507,3 @@ def test_a_missing_runtime_directory_is_refused_not_created(host: SwitchHost) ->
     assert body["error"]["code"] == "runner_not_running"
     assert not missing.exists()
     assert "spool-pending" not in host.client_listing(ALLOWED_ACCOUNT)
-
-
-# ------------------------------------------- TEMPORARY probe (card t_e2514bdf)
-
-
-def test_probe_the_second_uid_close_and_its_traceback(host: SwitchHost) -> None:
-    """TEMPORARY: print the runner's stderr after a second-uid connection.
-
-    Deleted before this change is submitted; it exists only so the macos-latest
-    job can print the server-side traceback that ``stderr=DEVNULL`` in
-    ``_start_detached`` would otherwise swallow.
-    """
-    stderr_path = host.base / "runner-stderr.log"
-    host.env["SMART_PANEL_RUNNER_STDERR"] = str(stderr_path)
-
-    report: list[str] = []
-    start = host.start()
-    report.append(f"start rc={start.returncode} stdout={start.stdout.strip()[:300]!r}")
-
-    proc = host.as_account(ALLOWED_ACCOUNT, "status", runner_uid=OWNER_UID)
-    report.append(
-        f"client rc={proc.returncode} stdout={proc.stdout.strip()[:400]!r} "
-        f"stderr={proc.stderr.strip()[:200]!r}"
-    )
-    time.sleep(0.5)
-    report.append(
-        "runner stderr:\n"
-        + (stderr_path.read_text(errors="replace") if stderr_path.exists() else "<no file>")
-    )
-    print("\n".join(report))
-    raise AssertionError("probe report printed above (temporary diagnostic)")
