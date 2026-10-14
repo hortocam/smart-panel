@@ -32,9 +32,17 @@ backstop for a hand-edited ``config.json``.
 F5 ordering (the wave-3 carry-over) — nothing pinned *when* ``plugin.instance.add``
 runs the shared guard relative to the settings coercion. A mutation that moved
 the guard after ``dict(args.get("settings") or {})`` left the whole suite green
-while turning "unknown plugin **and** malformed settings" from ``invalid_input``
-(exit 2) into ``internal`` (exit 1): the coercion raises first. The ordering is
-now pinned, so the plugin refusal is always the error a caller sees.
+while changing which error a caller saw: "unknown plugin **and** malformed
+settings" reported the coercion's setting (``plugins.dead.settings``) instead of
+the guard's (``plugins.dead.plugin``). The ordering is now pinned, so the plugin
+refusal is always the error a caller sees.
+
+F5 settings type — a malformed ``settings`` *type* on a plugin the loader knows
+(``["not-a-pair"]``, which ``dict(...)`` cannot consume) used to fall through to
+the dispatch catch-all as ``internal`` (exit 1). FR-006 says an invalid change is
+rejected with a message that identifies the setting, so the handler now maps the
+coercion's failure to ``invalid_input`` (exit 2) naming ``plugins.<name>.settings``
+— the same class the other F3 validators use.
 """
 
 from __future__ import annotations
@@ -215,9 +223,11 @@ def test_adding_an_instance_runs_the_guard_before_coercing_settings(tmp_path: Pa
     # which ``dict(...)`` cannot consume) and differ only in whether the loader
     # knows the plugin. Pinning *both* outcomes is what makes the ordering
     # observable: with the guard first the unknown plugin is refused by the guard
-    # (outcome 1); were the guard after ``dict(args.get("settings") or {})``, that
-    # same dispatch would collapse into the coercion's outcome (2) and report
-    # ``internal`` (exit 1) instead of the actionable ``invalid_input`` (exit 2).
+    # (outcome 1, its ``plugins.dead.plugin`` setting); were the guard after
+    # ``dict(args.get("settings") or {})``, that same dispatch would report the
+    # coercion's ``plugins.dead.settings`` instead — the guard's actionable
+    # plugin refusal would be masked by the settings verdict. Both outcomes are
+    # now ``invalid_input`` (exit 2) after the F5 settings-type fix below.
     loader = PluginLoader(builtins={"text": _TinyRegionPlugin}, home=tmp_path / "plugins")
     runner = _StubRunner(loader=loader)
     dispatch = make_dispatch(runner)
@@ -239,10 +249,11 @@ def test_adding_an_instance_runs_the_guard_before_coercing_settings(tmp_path: Pa
 
     # Outcome 2 -- a plugin the loader knows, same malformed settings: the guard
     # passes, so the coercion is what fails. The outcome is the coercion's, not the
-    # guard's: ``internal`` (exit 1), because the malformed ``settings`` type is
-    # not (yet) mapped to ``invalid_input`` the way the F3 validators are. This
-    # contrast is what pins the ordering; the mismatch itself is recorded as a
-    # followup, not "fixed" here (this card is a test-only change).
+    # guard's: ``invalid_input`` (exit 2) naming ``plugins.ok.settings`` (FR-006 —
+    # an invalid change is rejected with a message that identifies the setting).
+    # This contrast with outcome 1's ``plugins.dead.plugin`` is what pins the
+    # ordering: run the guard *after* the coercion and outcome 1 would report the
+    # settings verdict instead of the plugin one.
     with pytest.raises(protocol.ProtocolError) as coerced:
         dispatch(
             protocol.Request(
@@ -250,8 +261,8 @@ def test_adding_an_instance_runs_the_guard_before_coercing_settings(tmp_path: Pa
                 {"name": "ok", "plugin": "text", "settings": malformed},
             )
         )
-    assert coerced.value.code == "internal"
-    assert coerced.value.setting is None
+    assert coerced.value.code == "invalid_input"
+    assert coerced.value.setting == "plugins.ok.settings"
     assert runner.config_data["plugins"] == {}
 
 
