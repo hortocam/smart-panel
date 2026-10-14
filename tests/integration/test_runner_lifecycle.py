@@ -19,14 +19,25 @@ pipeline are exercised end to end on a host with no panel attached:
   plugin is refused with exit 2 (``invalid_input`` / ``plugins.<name>.plugin``)
   and persists nothing — the same FR-006 guard the runner applies live — while a
   registered built-in instance is still written through;
+* a **silent** runner (``SIGSTOP``ped, so the socket accepts and the hello goes
+  unanswered) is not reported as ``runner_not_running``: ``status`` is exit 1
+  ``timeout`` and a second ``start`` is exit 6 ``conflict`` rather than a
+  detached child quietly dying on the lock the frozen runner still holds; a
+  ``logs --follow`` against the same frozen runner is exit 1 ``timeout`` too,
+  not exit 3;
+* a ``start`` whose detached child dies (here: the lock is held, so the child
+  exits 6) reports the child — the conflict code and the child's own stderr —
+  instead of a bare "no first frame" timeout;
 * ``stop`` exits 0 and leaves no runner.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -36,6 +47,8 @@ from pathlib import Path
 
 import pytest
 from PIL import Image as PILImage
+
+from smart_panel.core.control import protocol
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CANVAS = (1920, 462)
@@ -134,7 +147,11 @@ class CliHost:
         )
         self.clock.write_text("0\n", encoding="utf-8")
 
-    def start(self, *, timeout: str = "15") -> subprocess.CompletedProcess[str]:
+    def start(self, *, timeout: str = "30") -> subprocess.CompletedProcess[str]:
+        # The CLI detaches a ``run`` child and waits ``max(--timeout, 10)`` for
+        # its first frame; 15 s was too tight for a starved CI leg, so the
+        # default is the 30 s the sibling e2e hosts settled on. The subprocess
+        # bound below (``--timeout`` + 30) stays above the CLI's own wait.
         return self.cli(
             "--json",
             "--timeout",
@@ -275,12 +292,21 @@ def test_a_config_set_appears_in_preview_without_a_partial_frame(host: CliHost) 
 def test_restart_returns_content(host: CliHost) -> None:
     _require_started(host)
 
-    # A generous global ``--timeout``: the start wait is ``max(ctx.timeout, 10)``
-    # and a loaded macOS CI runner can take well over 10 s to bring a fresh
-    # runner up to its first frame. The wait stays bounded, so a runner that
-    # never starts still fails.
+    # A generous global ``--timeout``: ``restart`` stops the runner first, then
+    # the start wait is ``max(ctx.timeout, 10)`` for the fresh runner's first
+    # frame — a loaded macOS CI runner can take well over 10 s to bring one up.
+    # 30 s matches the sibling e2e hosts' ``start`` bound; the wait stays
+    # bounded, so a runner that never starts still fails.
+    #
+    # ``restart`` is the only stop->start of these hosts, so the CLI's internal
+    # worst case is the *sum* of the two waits — stop ``max(ctx.timeout, 10)``
+    # plus start ``max(ctx.timeout, DEFAULT_START_TIMEOUT_S)`` = 30 + 30, plus
+    # interpreter startup (``commands/runner.py:86-87``). The old 60 s subprocess
+    # bound sat flush with that; 90 s is the hosts' ``--timeout`` + 30 idiom
+    # applied to the two-phase command, and still bounds: a restart that never
+    # returns fails.
     restarted, proc = host.data(
-        "--json", "--timeout", "20", "restart", "--clock-file", str(host.clock), timeout=65
+        "--json", "--timeout", "30", "restart", "--clock-file", str(host.clock), timeout=90
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert restarted["data"]["state"] == "running"
@@ -377,7 +403,7 @@ def _start_args(host: CliHost) -> list[str]:
     return [
         "--json",
         "--timeout",
-        "15",
+        "30",
         "start",
         "--sink",
         "files",
@@ -389,7 +415,7 @@ def _start_args(host: CliHost) -> list[str]:
 
 
 def _require_started(host: CliHost) -> dict:
-    started, proc = host.data(*_start_args(host), timeout=45)
+    started, proc = host.data(*_start_args(host), timeout=60)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert started["data"]["state"] == "running"
     return started
@@ -443,3 +469,95 @@ def sample_frames(host: CliHost, *, count: int, spacing: float = 0.05) -> list[t
             sizes.append(image.size)
         time.sleep(spacing)
     return sizes
+
+
+# -------------------------------------------- a runner that is there but silent
+
+
+def test_a_silent_runner_is_not_reported_as_gone(host: CliHost) -> None:
+    """A frozen runner is still a runner: no false exit 3, no doomed child.
+
+    ``SIGSTOP`` leaves the listening socket in place, so a client's connect
+    succeeds and its hello goes unanswered — the "starved, or mid-teardown"
+    shape. ``status`` must not claim ``runner_not_running`` (exit 3) while
+    ``runner.pid`` still names a live process, and ``start`` must report the
+    conflict (exit 6) rather than detaching a child into the lock the frozen
+    runner holds and then reporting a bare timeout.
+    """
+    _require_started(host)
+    pid_file = host.runtime / "runner.pid"
+    pid = int(pid_file.read_text(encoding="utf-8").strip())
+    os.kill(pid, signal.SIGSTOP)
+    try:
+        status, proc = host.data("--json", "--timeout", "2", "status")
+        assert proc.returncode == protocol.EXIT_CODES["timeout"] == 1, proc.stdout + proc.stderr
+        assert status["error"]["code"] == "timeout", status
+        assert "did not answer" in status["error"]["message"]
+
+        second, proc = host.data("--json", "--timeout", "2", "start")
+        assert proc.returncode == 6, second
+        assert second["error"]["code"] == "conflict", second
+    finally:
+        os.kill(pid, signal.SIGCONT)
+
+    proc = host.stop()
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_a_follow_of_a_silent_runner_is_not_reported_as_gone(host: CliHost) -> None:
+    """``logs --follow`` against a frozen runner exits 1 ``timeout``, not 3.
+
+    The same ``SIGSTOP``ped runner as above: ``runner.pid`` still names a live
+    process and the listening socket still accepts, so the follow's connect
+    succeeds and its hello handshake goes unanswered. ``--timeout`` bounds the
+    connect and handshake, so the follow must report the documented ``timeout``
+    code (exit 1) — "the runner did not answer" — rather than
+    ``runner_not_running`` (exit 3), which claims there is no runner while a
+    live one holds the single-instance lock. This is the streaming path's last
+    conflation of the two "no answer" shapes.
+    """
+    _require_started(host)
+    pid_file = host.runtime / "runner.pid"
+    pid = int(pid_file.read_text(encoding="utf-8").strip())
+    os.kill(pid, signal.SIGSTOP)
+    try:
+        # The frozen pid is still live: this is not "no runner".
+        os.kill(pid, 0)
+        proc = host.cli("--json", "--timeout", "2", "logs", "--follow")
+        assert proc.returncode == protocol.EXIT_CODES["timeout"] == 1, proc.stdout + proc.stderr
+        payload = json.loads(proc.stdout.splitlines()[0])
+        assert payload["error"]["code"] == "timeout", payload
+        assert "did not answer" in payload["error"]["message"]
+    finally:
+        os.kill(pid, signal.SIGCONT)
+
+    proc = host.stop()
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_a_start_whose_child_loses_the_lock_names_the_child(host: CliHost) -> None:
+    """The detached child's own failure must not be invisible to the parent.
+
+    With ``<runtime>/runner.lock`` held — as a surviving runner, or a runner
+    frozen mid-teardown, would hold it — there is no control socket, so
+    ``start`` detaches a child; the child loses the lock, exits 6 and prints
+    why. The parent must report that child (the conflict code, and the child's
+    own stderr line under ``SMART_PANEL_TESTING=1``) instead of a bare "no
+    first frame" timeout that hides it.
+    """
+    host.runtime.mkdir(parents=True, exist_ok=True)
+    os.chmod(host.runtime, 0o755)
+    lock = host.runtime / "runner.lock"
+    lock_fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        started, proc = host.data(*_start_args(host), timeout=60)
+    finally:
+        os.close(lock_fd)
+
+    assert proc.returncode == 6, started
+    assert started["error"]["code"] == "conflict", started
+    message = started["error"]["message"]
+    assert "exited with status 6" in message, message
+    assert "another runner already holds" in message, message
+    assert str(lock) in message, message

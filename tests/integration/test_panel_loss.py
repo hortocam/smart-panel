@@ -76,13 +76,26 @@ class DeviceFactory:
         return self.devices[-1]
 
 
-def _wait_until(predicate, timeout: float = 5.0) -> None:
+# Each step below waits for an effect the runner's background loops produce. The
+# runner paces frames off the wall clock (``frame_interval_s``) — the sink's
+# fake clock only gates its own reopen backoff, and is advanced *before* a wait,
+# so nothing here waits on a clock step. A starved CI leg leaves those threads
+# unscheduled for seconds: 5 s was too tight at load average ~28 on an 8-core
+# host, so this is the 30 s the sibling e2e hosts settled on for their
+# first-frame ``start`` (``test_gauges_e2e``, ``test_sidebar_e2e``,
+# ``test_plugin_isolation``, ``test_dropin_plugin``; see 4ea0909). It stays
+# bounded: a step whose effect never lands still fails, now naming the effect.
+EFFECT_WAIT_S = 30.0
+
+
+def _wait_until(predicate, *, what: str, timeout: float = EFFECT_WAIT_S) -> None:
+    """Poll ``predicate`` until it holds, or fail naming the effect waited for."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
             return
         time.sleep(0.01)
-    raise AssertionError("condition was not met before the deadline")
+    raise AssertionError(f"{what} never appeared within {timeout:g}s")
 
 
 @pytest.fixture
@@ -121,39 +134,43 @@ def test_the_runner_survives_panel_appearance_and_loss(runtime: Path) -> None:
         # 2. A device appears: frames start, and only after the init sequence.
         factory.available = True
         sink_clock.advance(60)  # clear any open backoff
-        _wait_until(lambda: sink.state().frames > 0)
+        _wait_until(lambda: sink.state().frames > 0, what="the sink's first frame")
         first = factory.current
         assert first.commands()[:2] == [_DIS, _LIG]
         assert _DRA in first.commands()
-        _wait_until(lambda: runner.status()["frames"]["sent"] > 0)
+        _wait_until(
+            lambda: runner.status()["frames"]["sent"] > 0, what="the runner's first sent frame"
+        )
 
         # 3. The device stops accepting writes: the handle is reopened and the
         #    init sequence is resent on the new handle, then frames resume.
         opens_before = factory.opens
         first.fail_frames = True
-        _wait_until(lambda: factory.opens > opens_before)
+        _wait_until(lambda: factory.opens > opens_before, what="the reopen after a failed write")
         second = factory.current
         assert second is not first
         assert first.closed
         assert second.commands()[:2] == [_DIS, _LIG]
-        _wait_until(lambda: second.frames() > 0)
+        _wait_until(lambda: second.frames() > 0, what="a frame on the reopened handle")
 
         # 4. The device disappears (unplug): the panel drops out ...
         failed_device = second
         failed_device.fail_frames = True
         factory.available = False
         sink_clock.advance(60)  # let the reopen attempt run and fail
-        _wait_until(lambda: sink.state().state != SinkState.CONNECTED, timeout=5.0)
+        _wait_until(lambda: sink.state().state != SinkState.CONNECTED, what="the panel to drop out")
         assert runner.status()["panel"]["state"] == str(SinkState.DISCONNECTED)
 
         # ... and reappears: the runner reconnects (a counted reconnect), resends
         # the init sequence and resumes frames — without the process exiting.
         factory.available = True
         sink_clock.advance(60)
-        _wait_until(lambda: runner.status()["panel"]["reconnects"] >= 1)
+        _wait_until(
+            lambda: runner.status()["panel"]["reconnects"] >= 1, what="the counted reconnect"
+        )
         third = factory.current
         assert third.commands()[:2] == [_DIS, _LIG]
-        _wait_until(lambda: third.frames() > 0)
+        _wait_until(lambda: third.frames() > 0, what="a frame after the reconnect")
 
         final = runner.status()
         assert final["panel"]["state"] == str(SinkState.CONNECTED)
