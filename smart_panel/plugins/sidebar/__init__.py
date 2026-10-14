@@ -236,11 +236,13 @@ class SidebarPlugin(Plugin):
         wall = float(getattr(frame, "wall", 0.0) or 0.0)
         readings = [self._read(entry, bus, wall) for entry in entries]
         result = self._renderer.render(frame, entries, readings, self.settings)
-        if self._renderer.fallbacks:
-            self._icon_warnings = [
-                {"icon": name, "reason": reason}
-                for name, reason in sorted(self._renderer.fallbacks.items())
-            ]
+        # Rebuilt every render (not only when non-empty): an icon that resolves
+        # again drops out of ``fallbacks`` — the renderer re-checks its fallbacks on a
+        # cached frame too — and ``status`` must stop listing it.
+        self._icon_warnings = [
+            {"icon": name, "reason": reason}
+            for name, reason in sorted(self._renderer.fallbacks.items())
+        ]
         return result
 
     # -------------------------------------------------------------- commands

@@ -21,6 +21,7 @@ Entry, FR-037 to FR-041):
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,7 @@ from smart_panel.plugins.sidebar.render import (
 )
 from smart_panel.sdk.context import FrameContext, ReadOnlyBus
 from smart_panel.sdk.plugin import Image as RenderImage
+from smart_panel.sdk.plugin import Unchanged
 from smart_panel.sdk.settings import validate
 from smart_panel.sdk.testing import PluginHarness
 
@@ -174,6 +176,95 @@ def test_an_unusable_icon_falls_back_to_the_generic_icon_with_a_warning(tmp_path
     assert registry.get(GENERIC_NAME, 64).size == (64, 64)
 
 
+def test_a_file_fixed_at_the_same_path_stops_warning_and_refreshes_the_cache(
+    tmp_path: Path,
+) -> None:
+    """A PNG replaced at the same path must resolve again, not serve a stale fallback.
+
+    ``IconRegistry`` caches by ``(name, size)``, so a file that was unusable and is
+    then rewritten at the same path would otherwise keep returning the generic
+    fallback (and keep listing its warning) until the process restarts.
+    """
+    registry = IconRegistry()
+    icon = tmp_path / "mail.png"
+    icon.write_bytes(b"this is not a PNG")
+    assert registry.get_with_status(str(icon), 64)[1] is False
+    assert [warning["icon"] for warning in registry.warnings] == [str(icon)]
+
+    PILImage.new("RGBA", (64, 64), (10, 20, 30, 255)).save(icon)
+
+    image, ok = registry.get_with_status(str(icon), 64)
+    assert ok is True, "an icon that resolves again must not keep reporting the fallback"
+    assert image.tobytes() != registry.generic(64).tobytes(), (
+        "a replaced file must not keep serving the cached fallback image"
+    )
+    assert registry.warnings == [], "a warning must not outlive the unusable icon"
+
+
+def test_an_icon_that_appears_later_resolves_and_stops_warning(tmp_path: Path) -> None:
+    """A path that did not exist yet is re-resolved, not pinned to its first failure."""
+    registry = IconRegistry()
+    later = tmp_path / "later.png"
+    assert registry.get_with_status(str(later), 64)[1] is False
+    assert [warning["icon"] for warning in registry.warnings] == [str(later)]
+
+    PILImage.new("RGBA", (64, 64), (10, 20, 30, 255)).save(later)
+
+    image, ok = registry.get_with_status(str(later), 64)
+    assert ok is True
+    assert image.tobytes() != registry.generic(64).tobytes()
+    assert registry.warnings == []
+
+
+def test_a_same_length_repair_at_the_same_stamp_is_still_re_read(tmp_path: Path) -> None:
+    """``(mtime_ns, size)`` is not a complete identity, so a failed entry is re-read.
+
+    Two writes microseconds apart can share one ``st_mtime_ns`` on a coarse clock, so
+    a file repaired at the same byte length inside the same tick would otherwise never
+    be re-read and its fallback would stick forever. The stamp is pinned here so the
+    test does not depend on the host clock's granularity.
+    """
+    registry = IconRegistry()
+    icon = tmp_path / "mail.png"
+    PILImage.new("RGBA", (64, 64), (10, 20, 30, 255)).save(icon)
+    good = icon.read_bytes()
+    when = (1_700_000_000_000_000_000, 1_700_000_000_000_000_000)  # fixed (atime, mtime)
+
+    icon.write_bytes(b"\x00" * len(good))  # same length, no longer a PNG
+    os.utime(icon, ns=when)
+    assert registry.get_with_status(str(icon), 64)[1] is False
+    assert [warning["icon"] for warning in registry.warnings] == [str(icon)]
+
+    icon.write_bytes(good)  # repaired: same path, same byte length, same stamp
+    os.utime(icon, ns=when)
+    image, ok = registry.get_with_status(str(icon), 64)
+    assert ok is True, "a same-length repair must not be masked by a cached failure"
+    assert image.tobytes() != registry.generic(64).tobytes()
+    assert registry.warnings == [], "the stale warning must be dropped once it resolves"
+
+
+def test_an_identical_failure_is_not_re_notified_but_a_new_one_is(tmp_path: Path) -> None:
+    """A still-failing file is re-read every lookup without spamming the log.
+
+    ``status`` already lists the icon, so an identical ``icon_unusable`` event is
+    suppressed on a repeat re-read; a genuinely different condition still notifies.
+    """
+    events: list[dict] = []
+    registry = IconRegistry(notify=events.append)
+    icon = tmp_path / "mail.png"
+    icon.write_bytes(b"nope")
+
+    assert registry.get_with_status(str(icon), 64)[1] is False
+    assert registry.get_with_status(str(icon), 64)[1] is False
+    assert registry.get_with_status(str(icon), 64)[1] is False
+    assert len(events) == 1, f"an identical repeat must not re-notify: {events}"
+    assert len(registry.warnings) == 1, "one entry per icon, not one per lookup"
+
+    icon.unlink()  # now a different condition: the file is gone
+    assert registry.get_with_status(str(icon), 64)[1] is False
+    assert len(events) == 2, f"a different failure must still notify: {events}"
+
+
 def test_the_sidebar_lists_its_icon_fallbacks_in_status(tmp_path: Path) -> None:
     harness = PluginHarness(
         SidebarPlugin,
@@ -198,6 +289,129 @@ def test_the_sidebar_lists_its_icon_fallbacks_in_status(tmp_path: Path) -> None:
         assert any("nowhere" in str(entry) for entry in warnings), warnings
     finally:
         harness.stop()
+
+
+def test_a_recovered_icon_drops_its_fallback_from_status(tmp_path: Path) -> None:
+    """``status`` must stop listing a fallback once the icon resolves again.
+
+    The sidebar's own region cache is refreshed on a settings change (``forget``),
+    which is when the icons are re-resolved: an icon fixed by then must leave no
+    stale ``warnings`` entry behind. A cached region also re-checks its fallbacks on
+    its own (see the renderer below), so a settings change is one way to force it,
+    not the only one.
+    """
+    icon = tmp_path / "mail.png"
+    icon.write_bytes(b"nope")
+    harness = PluginHarness(
+        SidebarPlugin,
+        {"entries": [_entry(0, icon=str(icon)).to_dict()]},
+        size=REGION,
+    )
+    try:
+        frame = FrameContext(
+            size=REGION,
+            now=0.0,
+            wall=0.0,
+            frame_index=1,
+            fonts=FontRegistry(),
+            icons=IconRegistry(),
+            bus=ReadOnlyBus(harness.bus),
+            min_text_px=24,
+        )
+        harness.plugin.render(frame)
+        assert harness.state()["warnings"], "the broken icon must be listed while it is broken"
+
+        PILImage.new("RGBA", (64, 64), (10, 20, 30, 255)).save(icon)
+        harness.set_settings(entries=[_entry(0, icon=str(icon)).to_dict()])
+        harness.plugin.render(frame)
+        assert harness.state()["warnings"] == [], (
+            "a recovered icon must not leave a stale fallback in status"
+        )
+    finally:
+        harness.stop()
+
+
+def test_a_cached_region_re_checks_a_fallback_so_a_repair_shows_on_the_next_frame(
+    tmp_path: Path,
+) -> None:
+    """A repaired icon drops from ``status`` on the next frame, not the next rebuild.
+
+    The region image is cached until something *visible* changes, so ``_draw`` — and
+    with it the icon resolution — is skipped while the sidebar is static. The renderer
+    therefore re-resolves the icons it currently records as unusable before it serves
+    a cached frame: the repair is noticed, the region is rebuilt so the real icon is
+    drawn, and ``status`` stops listing the old warning without waiting for a settings
+    change or a restart.
+    """
+    icon = tmp_path / "mail.png"
+    icon.write_bytes(b"nope")
+    harness = PluginHarness(
+        SidebarPlugin,
+        {"entries": [_entry(0, icon=str(icon)).to_dict()]},
+        size=REGION,
+    )
+    try:
+        frame = FrameContext(
+            size=REGION,
+            now=0.0,
+            wall=0.0,
+            frame_index=1,
+            fonts=FontRegistry(),
+            icons=IconRegistry(),
+            bus=ReadOnlyBus(harness.bus),
+            min_text_px=24,
+        )
+        harness.plugin.render(frame)
+        assert harness.state()["warnings"], "the broken icon must be listed while it is broken"
+
+        PILImage.new("RGBA", (64, 64), (10, 20, 30, 255)).save(icon)
+
+        # Same frame, same settings: nothing *visible* changed, so the region key is
+        # unchanged and the cache would answer ``Unchanged`` without the re-check.
+        result = harness.plugin.render(frame)
+        assert isinstance(result, RenderImage), (
+            "a repaired icon must rebuild the region so the real icon is drawn"
+        )
+        assert harness.state()["warnings"] == [], (
+            "a repaired icon must drop out of status on the next frame, not the next rebuild"
+        )
+
+        # And the rebuilt region is cached again: a settled sidebar costs no new build.
+        assert isinstance(harness.plugin.render(frame), Unchanged)
+    finally:
+        harness.stop()
+
+
+def test_documented_limitation_a_cached_success_trusts_its_stamp(tmp_path: Path) -> None:
+    """A cached *success* trusts the ``(mtime_ns, size)`` stamp — including its blind spot.
+
+    The stamp is not a complete identity: measured on this filesystem, two writes
+    microseconds apart can share one ``st_mtime_ns``. A same-byte-length corruption
+    whose stamp is unchanged therefore keeps serving the previously decoded image (the
+    stamp is pinned explicitly here so the test does not depend on the host clock's
+    granularity). There is no bounded-cadence re-verification of a cached success, so
+    this is documented, measured behavior rather than a guarantee; as soon as the stamp
+    changes the failure *is* re-read and reported.
+    """
+    registry = IconRegistry()
+    icon = tmp_path / "mail.png"
+    PILImage.new("RGBA", (64, 64), (10, 20, 30, 255)).save(icon)
+    good = icon.read_bytes()
+    decoded = registry.get_with_status(str(icon), 64)[0].tobytes()
+    stamp = icon.stat()
+    pinned = (stamp.st_atime_ns, stamp.st_mtime_ns)  # the successful read's own stamp
+
+    icon.write_bytes(b"\x00" * len(good))  # same byte length, no longer a PNG
+    os.utime(icon, ns=pinned)
+    stale_image, ok = registry.get_with_status(str(icon), 64)
+    assert ok is True and stale_image.tobytes() == decoded, (
+        "documented limitation: an unchanged stamp serves the cached success"
+    )
+
+    os.utime(icon, ns=(pinned[0] + 1_000_000, pinned[1] + 1_000_000))  # the stamp changes
+    assert registry.get_with_status(str(icon), 64)[1] is False, (
+        "a changed stamp must be re-read, so a corruption is reported once the stamp moves"
+    )
 
 
 # ------------------------------------------------------- the entry model (T106)
