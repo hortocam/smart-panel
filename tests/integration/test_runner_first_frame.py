@@ -100,13 +100,25 @@ def is_non_blank(image: PILImage.Image) -> bool:
     return int(high) > 200
 
 
-def _wait_until(predicate, timeout: float = 5.0) -> None:
+# Every wait below polls for the runner's first sent frame — an effect its
+# background loop produces. The runner paces frames off the wall clock
+# (``frame_interval_s``), so no fake-clock step is involved. A starved CI leg
+# leaves that loop unscheduled for seconds: 5 s was too tight, so this is the
+# 30 s the sibling e2e hosts settled on for their first-frame ``start``
+# (``test_gauges_e2e``, ``test_sidebar_e2e``, ``test_plugin_isolation``,
+# ``test_dropin_plugin``; see 4ea0909). It stays bounded: a wait whose effect
+# never lands still fails, now naming the effect.
+EFFECT_WAIT_S = 30.0
+
+
+def _wait_until(predicate, *, what: str, timeout: float = EFFECT_WAIT_S) -> None:
+    """Poll ``predicate`` until it holds, or fail naming the effect waited for."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
             return
         time.sleep(0.01)
-    raise AssertionError("condition was not met before the deadline")
+    raise AssertionError(f"{what} never appeared within {timeout:g}s")
 
 
 @pytest.fixture
@@ -173,7 +185,7 @@ def _events(status: dict, event: str) -> list[dict]:
 def test_the_first_sent_frame_carries_region_content(runtime: Path, tmp_path: Path) -> None:
     runner, sink = _start("slow", tmp_path, name="slow")
     try:
-        _wait_until(lambda: sink.frames)
+        _wait_until(lambda: sink.frames, what="the runner's first frame")
         first = sink.frames[0]
         assert first.size == CANVAS
         assert is_non_blank(first), (
@@ -192,7 +204,7 @@ def test_a_raising_region_is_non_blank_on_the_first_frame(
     # background, or `start` would return a blank canvas for a broken plugin.
     runner, sink = _start("broken", tmp_path, name="broken")
     try:
-        _wait_until(lambda: sink.frames)
+        _wait_until(lambda: sink.frames, what="the runner's first frame (raising region)")
         assert is_non_blank(sink.frames[0])
         status = runner.status()
         assert status["plugins"]["main"]["state"] == "degraded"
@@ -208,7 +220,7 @@ def test_an_inactive_only_layout_still_starts_and_explains_the_empty_canvas(
     try:
         # Bounded: the instance never draws, so waiting for content would hang
         # forever. The runner starts anyway ...
-        _wait_until(lambda: sink.frames)
+        _wait_until(lambda: sink.frames, what="the runner's first frame (inactive-only layout)")
         assert not is_non_blank(sink.frames[0])
 
         # ... and `status` says why the canvas is empty: the instance finished
@@ -232,7 +244,7 @@ def test_a_layout_with_no_region_instances_still_starts_quietly(
     # has no instances behind it.
     runner, sink = _start(None, tmp_path, name="empty")
     try:
-        _wait_until(lambda: sink.frames)
+        _wait_until(lambda: sink.frames, what="the runner's first frame (empty layout)")
         assert not is_non_blank(sink.frames[0])
         assert _events(runner.status(), "first_frame_without_content") == []
     finally:
