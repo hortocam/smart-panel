@@ -19,13 +19,14 @@ interpreter, its site-packages and the two source packages under ``/tmp``. That
 copy is the only way to give a distinct uid the same code; it is skipped, never
 faked, when the host cannot provide it (see :func:`stage`).
 
-The real cross-uid run is Linux-only. The kernel authenticates the peer through
-``SO_PEERCRED`` on Linux and ``LOCAL_PEERCRED`` on macOS, and ``peercred.py``
-labels the macOS branch unverified; the macos-latest job of PR #42 (run
-38486563021) then showed the server closing the handshake with no reply for a
-second uid, which is a finding about that branch (follow-up card), not something
-this test can fix. macOS keeps T040's in-process coverage, and the other uid
-still has to pass every assertion here on Linux.
+The real cross-uid run was Linux-only until the macOS ``LOCAL_PEERCRED`` branch was
+fixed (card ``t_e2514bdf``). The macos-latest job of PR #42 (run 38486563021) showed
+the server closing the handshake with no reply for a second uid, because Darwin's
+``os.getgrouplist`` takes a C ``int`` and ``nobody``'s group id (4294967294) does not
+fit: the ``OverflowError`` escaped the peer-credential lookup and killed the
+connection thread before the policy could answer. Both platforms now run these same
+assertions against a kernel-authenticated second uid; a host that cannot provide one
+still skips, and never fakes.
 
 Every refusal is proven twice: once through the exit code of the real process,
 and once against :func:`smart_panel.core.control.access.is_allowed`, the pure
@@ -165,18 +166,10 @@ def stage() -> Iterator[Stage]:
     CLI as the other account. Anything short of that is a skip with the reason
     attached, never a green that silently did nothing.
 
-    Linux only, for now: the kernel reports the peer through ``SO_PEERCRED`` there,
-    while ``peercred.py`` calls its macOS ``LOCAL_PEERCRED`` branch unverified, and
-    the macos-latest job of PR #42 (run 38486563021) closed the handshake with no
-    reply for a second uid — a finding about that branch, tracked separately.
+    The kernel authenticates the second uid through ``SO_PEERCRED`` on Linux and
+    ``LOCAL_PEERCRED`` on macOS, and both are exercised here: the macOS branch was
+    unverified until card ``t_e2514bdf`` fixed the group lookup it tripped over.
     """
-    if sys.platform != "linux":  # pragma: no cover - no cross-uid peercred elsewhere
-        pytest.skip(
-            "a second uid must be authenticated by the kernel over the control socket; "
-            "the macOS LOCAL_PEERCRED branch is unverified (peercred.py) and macos-latest "
-            "closes the handshake for a second uid (PR #42, run 38486563021). macOS keeps "
-            "T040's in-process coverage."
-        )
     if shutil.which("sudo") is None:  # pragma: no cover - exercised on CI images without sudo
         pytest.skip("no sudo on this host: cannot run a client as a second uid")
     probe = subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=15)
@@ -514,3 +507,34 @@ def test_a_missing_runtime_directory_is_refused_not_created(host: SwitchHost) ->
     assert body["error"]["code"] == "runner_not_running"
     assert not missing.exists()
     assert "spool-pending" not in host.client_listing(ALLOWED_ACCOUNT)
+
+
+# ------------------------------------------- TEMPORARY probe (card t_e2514bdf)
+
+
+def test_probe_the_second_uid_close_and_its_traceback(host: SwitchHost) -> None:
+    """TEMPORARY: print the runner's stderr after a second-uid connection.
+
+    Deleted before this change is submitted; it exists only so the macos-latest
+    job can print the server-side traceback that ``stderr=DEVNULL`` in
+    ``_start_detached`` would otherwise swallow.
+    """
+    stderr_path = host.base / "runner-stderr.log"
+    host.env["SMART_PANEL_RUNNER_STDERR"] = str(stderr_path)
+
+    report: list[str] = []
+    start = host.start()
+    report.append(f"start rc={start.returncode} stdout={start.stdout.strip()[:300]!r}")
+
+    proc = host.as_account(ALLOWED_ACCOUNT, "status", runner_uid=OWNER_UID)
+    report.append(
+        f"client rc={proc.returncode} stdout={proc.stdout.strip()[:400]!r} "
+        f"stderr={proc.stderr.strip()[:200]!r}"
+    )
+    time.sleep(0.5)
+    report.append(
+        "runner stderr:\n"
+        + (stderr_path.read_text(errors="replace") if stderr_path.exists() else "<no file>")
+    )
+    print("\n".join(report))
+    raise AssertionError("probe report printed above (temporary diagnostic)")
