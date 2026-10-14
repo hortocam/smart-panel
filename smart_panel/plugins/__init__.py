@@ -3,8 +3,7 @@
 The loader reads this mapping first (``PluginLoader._load_builtin_registry``),
 then entry points, then the drop-in directory. It lists the built-ins that ship
 with the project: ``text`` (US1), ``alerts`` (US2, T072), ``crawl`` and
-``sources`` (US3, T088) and ``gauges`` (US4, T100); the ``sidebar`` follows in
-US5.
+``sources`` (US3, T088), ``gauges`` (US4, T100) and ``sidebar`` (US5, T109).
 
 :func:`builtin_instances` is the default-config seed: every registered built-in
 gets one enabled instance, so a fresh install has a valid config the moment it
@@ -27,6 +26,7 @@ from typing import Any
 from smart_panel.plugins.alerts import AlertsPlugin
 from smart_panel.plugins.crawl import CrawlPlugin
 from smart_panel.plugins.gauges import GaugesPlugin
+from smart_panel.plugins.sidebar import SidebarPlugin
 from smart_panel.plugins.sources import SourcesPlugin
 from smart_panel.plugins.text import TextPlugin
 from smart_panel.sdk.plugin import Plugin
@@ -37,6 +37,7 @@ BUILTIN_PLUGINS: dict[str, type[Plugin]] = {
     CrawlPlugin.manifest.name: CrawlPlugin,
     SourcesPlugin.manifest.name: SourcesPlugin,
     GaugesPlugin.manifest.name: GaugesPlugin,
+    SidebarPlugin.manifest.name: SidebarPlugin,
 }
 
 # The system source the default config starts with, and the four gauges over its
@@ -113,6 +114,9 @@ DEFAULT_GAUGES: list[dict[str, Any]] = [
 DEFAULT_INSTANCE_SETTINGS: dict[str, dict[str, Any]] = {
     "sources": {"sources": {"sys": DEFAULT_SYSTEM_SOURCE}},
     "gauges": {"gauges": DEFAULT_GAUGES},
+    # US5: the sidebar starts with no configured entries; the built-in alert
+    # entry is implicit (T109).
+    "sidebar": {"entries": []},
 }
 
 
@@ -147,6 +151,7 @@ __all__ = [
     "AlertsPlugin",
     "CrawlPlugin",
     "GaugesPlugin",
+    "SidebarPlugin",
     "SourcesPlugin",
     "TextPlugin",
     "builtin_instances",
