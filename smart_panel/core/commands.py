@@ -25,7 +25,7 @@ from smart_panel.core.control import protocol
 from smart_panel.core.layout import LayoutError
 from smart_panel.core.secrets import SecretError, SecretNotFound
 from smart_panel.sdk.plugin import CommandError, SettingsRejected
-from smart_panel.sdk.settings import Setting, SettingError
+from smart_panel.sdk.settings import Setting, SettingError, validate
 
 __all__ = ["HANDLERS", "make_dispatch", "schema"]
 
@@ -202,6 +202,7 @@ def _config_set(runner: Any, args: dict[str, Any]) -> dict[str, Any]:
         # either.  The write is refused before ``set_config`` touches anything.
         candidate = assign(runner.config_data, path, args["value"])
         _guard_plugin_instances(runner, candidate.get("plugins"))
+        _guard_plugin_settings(runner, candidate.get("plugins"))
     return runner.set_config(path, args["value"])
 
 
@@ -384,6 +385,7 @@ def _plugin_instance_add(runner: Any, args: dict[str, Any]) -> dict[str, Any]:
             setting=f"plugins.{name}.settings",
         ) from exc
     instance = {"plugin": plugin, "enabled": True, "settings": settings}
+    _guard_plugin_settings(runner, {name: instance})
     return runner.set_config(f"plugins.{name}", instance)
 
 
@@ -399,6 +401,9 @@ def _plugin_instance_set(runner: Any, args: dict[str, Any]) -> dict[str, Any]:
         raise protocol.ProtocolError("not_found", f"no instance named {name!r}")
     merged = dict(current.get("settings", {}))
     merged.update(settings)
+    _guard_plugin_settings(
+        runner, {name: {"plugin": current.get("plugin"), "settings": merged}}
+    )
     return runner.set_config(f"plugins.{name}.settings", merged)
 
 
@@ -630,6 +635,56 @@ def _guard_plugin_instances(runner: Any, instances: Any) -> None:
                 f"plugin {plugin!r} is not installed or available",
                 setting=f"plugins.{name}.plugin",
             )
+
+
+def _guard_plugin_settings(runner: Any, instances: Any) -> None:
+    """Reject plugin instance settings that violate the plugin's declared manifest.
+
+    FR-006 requires a change to be validated before it is applied, and
+    ``contracts/plugin-sdk.md`` says the runner validates settings before they
+    reach the plugin, so plugin code receives a dict that already conforms. The
+    verdict is the SDK's own :func:`~smart_panel.sdk.settings.validate` against
+    the plugin's declared :class:`~smart_panel.sdk.settings.Setting` list, so a
+    rejection quotes the constraint the manifest declares (a range, an enum's
+    choices, an unknown key). Every path that can persist an instance routes
+    through here — ``plugin.instance.add``, ``plugin.instance.set`` (the *merged*
+    settings) and ``config set`` on a ``plugins`` path (the whole subtree) — so
+    all three agree, mirroring :func:`_guard_plugin_instances`.
+
+    Only a plugin the loader actually resolved is checked: an unavailable plugin
+    is the instance guard's verdict (``plugins.<name>.plugin``), and with no
+    loader there is nothing to validate against. A plugin with no declared
+    settings is left permissive.
+    """
+    loader = runner.loader
+    if loader is None or not isinstance(instances, Mapping):
+        return
+    loaded = loader.loaded()
+    for name, instance in instances.items():
+        if not isinstance(instance, Mapping):
+            continue
+        plugin_name = instance.get("plugin")
+        if not isinstance(plugin_name, str):
+            continue
+        plugin_class = loaded.get(plugin_name)
+        if plugin_class is None:
+            continue
+        manifest = getattr(plugin_class, "manifest", None)
+        declared = getattr(manifest, "settings", None)
+        if not declared:
+            continue
+        settings = instance.get("settings", {}) or {}
+        if not isinstance(settings, Mapping):
+            # ``validate_config`` reports a non-object settings value with the
+            # canonical ``plugins.<name>.settings`` path; do not mask it here.
+            continue
+        prefix = f"plugins.{name}.settings"
+        try:
+            validate(declared, settings, prefix=prefix)
+        except SettingError as exc:
+            raise protocol.ProtocolError(
+                "invalid_input", exc.message, setting=exc.path
+            ) from exc
 
 
 def _level_at_least(event: Mapping[str, Any], level: str | None) -> bool:
