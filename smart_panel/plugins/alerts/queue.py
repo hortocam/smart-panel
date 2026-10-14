@@ -304,7 +304,15 @@ class AlertManager:
     def show(self) -> dict[str, Any]:
         """The current alert, the queue and the missed count (``show`` verb)."""
         with self._lock:
-            self._advance_locked(self.clock.monotonic(), self.clock.time())
+            changed = self._advance_locked(self.clock.monotonic(), self.clock.time())
+            if changed:
+                # This call may be the first to notice that an alert's time ran
+                # out: ``alert show`` and every ``status`` (through
+                # ``describe_state``) reach the timers here. The missed set the
+                # advance just changed has to reach the bus, or a consumer -- the
+                # sidebar's built-in alert entry, a count plugin -- keeps the
+                # previous value until some later render tick publishes it.
+                self._publish_missed()
             current = None
             if self._current is not None:
                 current = {**self._current.summary(), "position": 0}

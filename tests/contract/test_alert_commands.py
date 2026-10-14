@@ -5,7 +5,9 @@ Shapes come from ``contracts/builtin-plugins.md`` (``alerts``) — the verbs
 arguments, which of them are ``spoolable``, and the validation that makes an
 invalid ``severity``, an empty ``message`` or a ``ttl`` below 1 second exit 2.
 A ``message`` over 280 characters is truncated instead, with a warning in the
-result. ``assert_conforms`` (FR-047) must pass for the plugin.
+result. ``show`` (and so every ``status``) publishes ``alerts.missed`` whenever
+it is the first caller to notice a timeout. ``assert_conforms`` (FR-047) must
+pass for the plugin.
 """
 
 from __future__ import annotations
@@ -233,5 +235,47 @@ def test_the_render_pass_settles_the_countdown_without_waiting_for_a_prune() -> 
         assert harness.render() is not None
         assert harness.render(advance_s=1.5) is None, "a timed-out alert stayed on screen"
         assert harness.command("show")["missed"]["count"] == 1
+    finally:
+        harness.stop()
+
+
+# ---------------------------------------------------- the alerts.missed topic
+
+
+def test_show_publishes_alerts_missed_when_it_is_the_first_to_notice_a_timeout() -> None:
+    """The ``show`` verb is a missed setter too, so it publishes the topic.
+
+    Regression (t_bdb6e057): ``show`` expired the alert through
+    ``_advance_locked`` but never published ``alerts.missed``, so a timeout first
+    noticed by ``alert show`` stayed invisible to every bus consumer. Nothing
+    ticks the plugin here, so ``show`` is the only caller that notices.
+    """
+    harness = PluginHarness(AlertsPlugin, size=MAIN_SIZE)
+    try:
+        assert harness.bus.get("alerts.missed").value == {"count": 0, "max_severity": None}
+        harness.command("push", severity="warning", message="on battery", id="ups-1", ttl=1)
+        harness.clock.advance(2)  # the display time elapses; no render tick yet
+
+        assert harness.command("show")["missed"] == {"count": 1, "max_severity": "warning"}
+        assert harness.bus.get("alerts.missed").value == {"count": 1, "max_severity": "warning"}
+    finally:
+        harness.stop()
+
+
+def test_status_publishes_alerts_missed_when_it_is_the_first_to_notice_a_timeout() -> None:
+    """Every ``status`` reaches ``show`` through ``describe_state``, so it publishes.
+
+    Regression (t_bdb6e057): a ``status`` poll was observed reporting ``missed == 1``
+    while the ``alerts.missed`` topic still held the startup ``{count: 0}``, because
+    the ``show`` call behind ``describe_state`` marked the alert missed without
+    publishing it.
+    """
+    harness = PluginHarness(AlertsPlugin, size=MAIN_SIZE)
+    try:
+        harness.command("push", severity="info", message="brief", id="i-1", ttl=1)
+        harness.clock.advance(2)  # the display time elapses; no render tick yet
+
+        assert harness.state() == {"current": None, "queued": 0, "missed": 1}
+        assert harness.bus.get("alerts.missed").value == {"count": 1, "max_severity": "info"}
     finally:
         harness.stop()
