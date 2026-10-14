@@ -104,6 +104,7 @@ def _run_clients(report: list[str], sock_path: Path) -> None:
             capture_output=True,
             text=True,
             timeout=90,
+            cwd=str(sock_path.parent),
         )
         report.append(
             f"client {account}: rc={proc.returncode} stdout={proc.stdout.strip()!r} "
