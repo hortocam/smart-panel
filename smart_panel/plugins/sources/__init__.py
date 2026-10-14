@@ -1,9 +1,9 @@
-"""The built-in ``sources`` plugin: data sources for the display (T081-T083).
+"""The built-in ``sources`` plugin: data sources for the display (T081-T083, T095).
 
 A ``datasource`` plugin (``plugin-sdk.md``): it declares the source types
-``pushed``, ``rss`` and ``http_json`` (``system`` joins them in US4) and fetches
-each configured source on its own interval, publishing the results on the bus
-as ``<name>.<metric>``.
+``pushed``, ``rss``, ``http_json`` and ``system`` and fetches each configured
+source on its own interval, publishing the results on the bus as
+``<name>.<metric>``.
 
 The sources themselves are declarative configuration: the instance's ``sources``
 setting carries ``{name: {type, interval_s, settings}}``, and the verbs
@@ -21,6 +21,7 @@ it ``stale`` once its TTL passes, and ``status`` reports the source's
 
 from __future__ import annotations
 
+import json
 import threading
 from typing import Any
 
@@ -33,6 +34,19 @@ from smart_panel.plugins.sources.http_json import (
     SourceError,
 )
 from smart_panel.plugins.sources.rss import RssSource
+from smart_panel.plugins.sources.system import (
+    DEFAULT_INTERVAL_S as SYSTEM_DEFAULT_INTERVAL_S,
+)
+from smart_panel.plugins.sources.system import (
+    INTERVAL_FLOOR_S as SYSTEM_INTERVAL_FLOOR_S,
+)
+from smart_panel.plugins.sources.system import (
+    SourceError as SystemSourceError,
+)
+from smart_panel.plugins.sources.system import (
+    SystemSource,
+)
+from smart_panel.sdk.context import SystemClock
 from smart_panel.sdk.plugin import (
     Command,
     CommandError,
@@ -50,6 +64,7 @@ _TIMEOUT_FLOOR_S = 1
 SOURCE_TYPES: dict[str, type] = {
     "rss": RssSource,
     "http_json": JsonSource,
+    "system": SystemSource,
 }
 
 
@@ -63,7 +78,8 @@ _SETTINGS: tuple[Setting, ...] = (
         type="object",
         default={},
         description=(
-            "Source name to {type, interval_s, settings}; types are pushed, rss and http_json"
+            "Source name to {type, interval_s, settings}; "
+            "types are pushed, rss, http_json and system"
         ),
     ),
 )
@@ -84,6 +100,9 @@ _SOURCE_TYPES: tuple[SourceType, ...] = (
     ),
     _source_type("rss", RssSource, ("items",)),
     _source_type("http_json", JsonSource, ("items",)),
+    _source_type(
+        "system", SystemSource, ("cpu", "mem", "temp", "disk", "net_rx", "net_tx")
+    ),
 )
 
 _COMMANDS: tuple[Command, ...] = (
@@ -135,13 +154,16 @@ _COMMANDS: tuple[Command, ...] = (
                 type="enum",
                 default="pushed",
                 description="Source type",
-                choices=["pushed", "rss", "http_json"],
+                choices=["pushed", "rss", "http_json", "system"],
             ),
             Setting(
                 name="interval",
                 type="int",
                 default=None,
-                description="Refresh interval in seconds (floor 30 for network types)",
+                description=(
+                    "Refresh interval in seconds (floor 1 for pushed and system, "
+                    "30 for network types)"
+                ),
                 min=1,
             ),
             Setting(
@@ -195,6 +217,10 @@ class SourcesPlugin(Plugin):
         self._health: dict[str, dict[str, Any]] = {}
         self._tasks: dict[str, Any] = {}
         self._configured_sources: dict[str, Any] = {}
+        # A ``system`` source keeps the previous network counters between
+        # refreshes, so one instance per (name, settings) is reused across fetches.
+        self._system_lock = threading.Lock()
+        self._system_sources: dict[tuple[str, str], Any] = {}
 
     # ------------------------------------------------------------ lifecycle
 
@@ -254,7 +280,19 @@ class SourcesPlugin(Plugin):
             return {"items": RssSource(str(source_name), payload).fetch(http)}
         if kind == "http_json":
             return JsonSource(str(source_name), payload).fetch(http)
+        if kind == "system":
+            return dict(self._system_source(str(source_name), payload).fetch())
         raise SourceError(f"unknown source type {kind!r}")
+
+    def _system_source(self, name: str, payload: dict[str, Any]) -> Any:
+        """The ``SystemSource`` for one name and settings, reused so its net rate works."""
+        key = (name, json.dumps(payload, sort_keys=True, default=str))
+        with self._system_lock:
+            source = self._system_sources.get(key)
+            if source is None:
+                source = SystemSource(name, payload, clock=self._clock())
+                self._system_sources[key] = source
+            return source
 
     def _refresh(self, name: str) -> None:
         with self._lock:
@@ -302,7 +340,7 @@ class SourcesPlugin(Plugin):
                 return self._source_remove(args)
             if name == "source list":
                 return self._source_list()
-        except SourceError as exc:
+        except (SourceError, SystemSourceError) as exc:
             raise CommandError("invalid_input", str(exc)) from exc
         raise CommandError("invalid_input", f"unknown command {name!r}")
 
@@ -432,22 +470,31 @@ class SourcesPlugin(Plugin):
             return float(clock.time())
         return 0.0
 
+    def _clock(self) -> Any:
+        """The runner's clock, so a source's rate math uses the same time as the frames."""
+        clock = getattr(self.ctx, "clock", None)
+        return clock if clock is not None else SystemClock()
+
     def _normalise(self, entry: Any) -> dict[str, Any]:
         """A source entry with defaults filled in for its type."""
         raw = dict(entry) if isinstance(entry, dict) else {}
         kind = str(raw.get("type") or "pushed")
-        if kind not in ("pushed", "rss", "http_json"):
+        if kind not in ("pushed", "rss", "http_json", "system"):
             raise SourceError(f"unknown source type {kind!r}")
         plugin = SOURCE_TYPES.get(kind)
         settings = dict(raw.get("settings") or {})
-        default_interval = JSON_INTERVAL_FLOOR_S
-        floor = _TIMEOUT_FLOOR_S if kind == "pushed" else JSON_INTERVAL_FLOOR_S
-        if raw.get("interval_s") is None and plugin is None:
-            interval = PUSH_TTL_DEFAULT
-        elif raw.get("interval_s") is None:
-            interval = default_interval
+        if kind == "pushed":
+            default_interval, floor = PUSH_TTL_DEFAULT, _TIMEOUT_FLOOR_S
+        elif kind == "system":
+            default_interval = SYSTEM_DEFAULT_INTERVAL_S
+            floor = SYSTEM_INTERVAL_FLOOR_S
         else:
-            interval = int(raw["interval_s"])
+            default_interval, floor = JSON_INTERVAL_FLOOR_S, JSON_INTERVAL_FLOOR_S
+        explicit = raw.get("interval_s")
+        if explicit is None and kind == "system" and settings.get("interval_s") is not None:
+            # ``interval_s`` may be given either way round for a system source.
+            explicit = settings.get("interval_s")
+        interval = default_interval if explicit is None else int(explicit)
         if interval < floor:
             raise SourceError(
                 f"source 'interval_s' is {interval}; the floor for a {kind} source is {floor}"
