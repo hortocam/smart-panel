@@ -33,6 +33,7 @@ import tempfile
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from PIL import Image as PILImage
@@ -165,19 +166,54 @@ class CliHost:
         self.clock.write_text(f"{value}\n", encoding="utf-8")
 
     def start(self) -> dict:
-        return self.ok(
-            "--json",
-            "--timeout",
-            "15",
-            "start",
-            "--sink",
-            "files",
-            "--files-dir",
-            str(self.frames),
-            "--clock-file",
-            str(self.clock),
-            timeout=45,
-        )
+        """Start the runner and wait for its first frame.
+
+        The first-frame wait is generous (30 s): a loaded macOS CI runner can
+        take far longer than a healthy host to import, build its runtime and
+        publish a first frame, so a start that gives up too early fails for the
+        host's schedule rather than for a bug. On failure the runner's own log
+        tail and pid file are attached, because the detached runner discards its
+        stderr and the bare ``timeout`` cannot say whether it died or was still
+        coming up when the wait expired.
+        """
+        try:
+            return self.ok(
+                "--json",
+                "--timeout",
+                "30",
+                "start",
+                "--sink",
+                "files",
+                "--files-dir",
+                str(self.frames),
+                "--clock-file",
+                str(self.clock),
+                timeout=60,
+            )
+        except AssertionError as exc:
+            raise AssertionError(f"{exc}\n{self._start_diagnostic()}") from exc
+
+    def _start_diagnostic(self) -> str:
+        """What the runner left behind when a ``start`` timed out.
+
+        A start that never answers the control socket is either a runner that
+        exited (a lock conflict, an invalid config, an import error) or one that
+        is still coming up; the log tail and the pid file are what tell those
+        apart after the fact, without a re-run.
+        """
+        pid = self.runtime / "runner.pid"
+        log = self.home / "runner.log"
+        lines = [
+            f"start diagnostic: runner.pid exists={pid.exists()} ({pid})",
+            f"                  runner.log exists={log.exists()} ({log})",
+        ]
+        if pid.exists():
+            lines.append(f"  runner.pid={pid.read_text(encoding='utf-8').strip()!r}")
+        if log.exists():
+            tail = log.read_text(encoding="utf-8", errors="replace").splitlines()[-15:]
+            lines.append("  runner.log tail:")
+            lines.extend(f"    {line}" for line in tail)
+        return "\n".join(lines)
 
     def stop(self) -> subprocess.CompletedProcess[str]:
         return self.cli("--json", "stop", timeout=30)
@@ -205,6 +241,31 @@ class CliHost:
                 last = self.frame()
                 if predicate(last):
                     return last
+            time.sleep(0.05)
+        raise AssertionError(f"{what} never appeared within {timeout}s (last={last})")
+
+    def wait_for(
+        self,
+        produce: Callable[[], Any],
+        predicate: Callable[[Any], bool],
+        *,
+        timeout: float = 15.0,
+        what: str = "the value",
+    ) -> Any:
+        """Poll ``produce`` until ``predicate`` accepts its result.
+
+        For an assertion that depends on an effect the runner applies
+        asynchronously — a fake-clock step the plugin only settles on its next
+        render tick — the effect has to be waited for, not assumed to have
+        happened between two commands. ``produce`` re-issues the read each
+        attempt; the value that passed is returned.
+        """
+        deadline = time.monotonic() + timeout
+        last: Any = None
+        while time.monotonic() < deadline:
+            last = produce()
+            if predicate(last):
+                return last
             time.sleep(0.05)
         raise AssertionError(f"{what} never appeared within {timeout}s (last={last})")
 
@@ -338,8 +399,17 @@ def test_a_timed_out_alert_is_in_history_and_counted_once(host: CliHost) -> None
     )
 
     host.set_clock(61.0)
-    history = host.ok("--json", "alert", "list", "--state", "timed_out")["alerts"]
-    assert [alert["id"] for alert in history] == ["ups-1"], history
+    # The clock step is settled by the plugin's per-frame render tick
+    # (``AlertManager.tick``); ``alert list`` only reads history and settles
+    # nothing, so a loaded runner can answer the list before that tick lands and
+    # report no row yet (observed on macos-latest, where the list came back
+    # ``[]``). Wait for the effect instead of reading the instant the clock file
+    # changes.
+    history = host.wait_for(
+        lambda: host.ok("--json", "alert", "list", "--state", "timed_out")["alerts"],
+        lambda alerts: [alert["id"] for alert in alerts] == ["ups-1"],
+        what="the timed-out alert in history",
+    )
     assert history[0]["outcome"] == "timed_out"
 
     show = host.ok("--json", "alert", "show")
