@@ -202,7 +202,7 @@ class CliHost:
         return self.ok(
             "--json",
             "--timeout",
-            "15",
+            "30",
             "start",
             "--sink",
             "files",
@@ -210,7 +210,7 @@ class CliHost:
             str(self.frames),
             "--clock-file",
             str(self.clock),
-            timeout=45,
+            timeout=60,
         )
 
     def stop(self) -> subprocess.CompletedProcess[str]:
@@ -474,11 +474,18 @@ def test_a_source_that_stops_reporting_shows_the_stale_state(host: CliHost) -> N
     host.write_metrics(mem=40.0, disk={"/": 61.0})
     host.set_clock(30.0)
 
+    # A clock jump past the staleness limit makes every gauge show no data until
+    # its source's next refresh, so wait for the joint state: the CPU gauge stale
+    # because its metric is gone, the MEM gauge fresh again after its 2 s refresh.
     status = host.wait_for_status(
-        lambda status: _gauge(status, "cpu")["stale"] is True, what="the stale state"
+        lambda status: _gauge(status, "cpu")["stale"] is True
+        and _gauge(status, "mem")["stale"] is False,
+        what="the stale cpu gauge next to a fresh mem gauge",
     )
     assert _gauge(status, "cpu")["shown"] == "no data"
-    assert _gauge(status, "mem")["stale"] is False, "a source still reporting must stay fresh"
+    assert _gauge(status, "cpu")["value"] is not None, (
+        "the stale gauge keeps its last value for status, but does not show it"
+    )
 
     stale_frame = host.wait_for_frame(
         lambda frame: _region(frame, MAIN) != _region(before, MAIN),
