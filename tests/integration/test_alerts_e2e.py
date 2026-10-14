@@ -65,6 +65,8 @@ class CliHost:
     #: How long the host itself keeps waiting for that runner once the CLI's
     #: bound has expired (a child still starting under load is not a dead one).
     START_GRACE_S = 60
+    #: How long ``stop`` waits for the runner to release its single-instance lock.
+    STOP_TIMEOUT_S = 60
 
     def __init__(self, base: Path, home: Path) -> None:
         self.base = base
@@ -263,7 +265,63 @@ class CliHost:
         return "\n".join(lines)
 
     def stop(self) -> subprocess.CompletedProcess[str]:
-        return self.cli("--json", "stop", timeout=30)
+        """Stop the runner, waiting generously for it to release its lock.
+
+        ``cmd_stop`` reports success only once the runner's process is really
+        gone — its pid file cleared, which is what frees the single-instance
+        lock. That wait defaults to 10 s, and a starved CI job can take longer
+        than that to join the runner's threads. When it expires the *next*
+        ``start`` hands its child a lock that is still held, the child exits on
+        the conflict, and the parent reports only "the runner never answered the
+        control socket" — observed on macos-latest in runs 38521533126 and
+        38522763272, both on the second start of a test that starts, stops and
+        starts again with almost nothing in between. The generous bound is what
+        keeps that window shut.
+
+        The exit code is the caller's to check: a teardown that stops an
+        already-stopped runner gets the normal exit 3.
+        """
+        return self.cli(
+            "--json", "--timeout", str(self.STOP_TIMEOUT_S), "stop",
+            timeout=self.STOP_TIMEOUT_S + 30,
+        )
+
+    def stop_ok(self) -> None:
+        """``stop`` for a runner that is running; requires that it is gone.
+
+        The exit code alone is not enough. A runner that is alive but silent —
+        starved, or part-way through its own teardown — is reported
+        ``runner_not_running`` (exit 3) while it still holds the single-instance
+        lock, and the next ``start`` then hands its child a conflict the child
+        dies on, which the parent reports only as ``timeout``. So the check is
+        the end state: nothing live behind the pid file.
+        """
+        proc = self.stop()
+        pid_file = self.runtime / "runner.pid"
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and self._pid_alive(pid_file):
+            time.sleep(0.05)
+        assert not self._pid_alive(pid_file), (
+            f"a runner is still alive behind {pid_file} after stop "
+            f"(exit {proc.returncode}: {proc.stdout}{proc.stderr})"
+        )
+
+    @staticmethod
+    def _pid_alive(pid_file: Path) -> bool:
+        """Whether ``pid_file`` names a live process (a missing file is not)."""
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:  # pragma: no cover - another account's runner
+            return True
+        except OSError:  # pragma: no cover - an out-of-range pid
+            return False
+        return True
 
     def frame(self) -> PILImage.Image:
         with PILImage.open(self.frames / "latest.png") as image:
@@ -489,7 +547,7 @@ def test_a_bad_severity_exits_2_and_a_message_is_truncated(host: CliHost) -> Non
 def test_a_push_while_the_runner_is_down_is_spooled_and_replayed(host: CliHost) -> None:
     host.start()
     host.wait_for_frame(lambda frame: frame.getpixel((1900, 10)) == MAIN_BG)
-    host.stop()
+    host.stop_ok()
 
     data = host.ok("--json", "alert", "push", "--severity", "warning", "--message", "while down")
     assert data["saved_for_later"] is True
@@ -509,7 +567,7 @@ def test_a_push_while_the_runner_is_down_is_spooled_and_replayed(host: CliHost) 
 def test_a_spooled_alert_older_than_its_duration_is_expired_and_missed(host: CliHost) -> None:
     host.start()
     host.wait_for_frame(lambda frame: frame.getpixel((1900, 10)) == MAIN_BG)
-    host.stop()
+    host.stop_ok()
 
     pending = host.home / "spool-pending"
     pending.mkdir(parents=True, exist_ok=True)
@@ -531,7 +589,7 @@ def test_a_spooled_alert_older_than_its_duration_is_expired_and_missed(host: Cli
 def test_a_flood_of_alerts_keeps_the_cap_logs_every_discard_and_keeps_frames(host: CliHost) -> None:
     host.start()
     host.wait_for_frame(lambda frame: frame.getpixel((1900, 10)) == MAIN_BG)
-    host.stop()
+    host.stop_ok()
 
     pending = host.home / "spool-pending"
     pending.mkdir(parents=True, exist_ok=True)
