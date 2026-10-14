@@ -174,6 +174,46 @@ def test_an_unusable_icon_falls_back_to_the_generic_icon_with_a_warning(tmp_path
     assert registry.get(GENERIC_NAME, 64).size == (64, 64)
 
 
+def test_a_file_fixed_at_the_same_path_stops_warning_and_refreshes_the_cache(
+    tmp_path: Path,
+) -> None:
+    """A PNG replaced at the same path must resolve again, not serve a stale fallback.
+
+    ``IconRegistry`` caches by ``(name, size)``, so a file that was unusable and is
+    then rewritten at the same path would otherwise keep returning the generic
+    fallback (and keep listing its warning) until the process restarts.
+    """
+    registry = IconRegistry()
+    icon = tmp_path / "mail.png"
+    icon.write_bytes(b"this is not a PNG")
+    assert registry.get_with_status(str(icon), 64)[1] is False
+    assert [warning["icon"] for warning in registry.warnings] == [str(icon)]
+
+    PILImage.new("RGBA", (64, 64), (10, 20, 30, 255)).save(icon)
+
+    image, ok = registry.get_with_status(str(icon), 64)
+    assert ok is True, "an icon that resolves again must not keep reporting the fallback"
+    assert image.tobytes() != registry.generic(64).tobytes(), (
+        "a replaced file must not keep serving the cached fallback image"
+    )
+    assert registry.warnings == [], "a warning must not outlive the unusable icon"
+
+
+def test_an_icon_that_appears_later_resolves_and_stops_warning(tmp_path: Path) -> None:
+    """A path that did not exist yet is re-resolved, not pinned to its first failure."""
+    registry = IconRegistry()
+    later = tmp_path / "later.png"
+    assert registry.get_with_status(str(later), 64)[1] is False
+    assert [warning["icon"] for warning in registry.warnings] == [str(later)]
+
+    PILImage.new("RGBA", (64, 64), (10, 20, 30, 255)).save(later)
+
+    image, ok = registry.get_with_status(str(later), 64)
+    assert ok is True
+    assert image.tobytes() != registry.generic(64).tobytes()
+    assert registry.warnings == []
+
+
 def test_the_sidebar_lists_its_icon_fallbacks_in_status(tmp_path: Path) -> None:
     harness = PluginHarness(
         SidebarPlugin,
@@ -196,6 +236,44 @@ def test_the_sidebar_lists_its_icon_fallbacks_in_status(tmp_path: Path) -> None:
         harness.plugin.render(frame)
         warnings = harness.state()["warnings"]
         assert any("nowhere" in str(entry) for entry in warnings), warnings
+    finally:
+        harness.stop()
+
+
+def test_a_recovered_icon_drops_its_fallback_from_status(tmp_path: Path) -> None:
+    """``status`` must stop listing a fallback once the icon resolves again.
+
+    The sidebar's own region cache is refreshed on a settings change (``forget``),
+    which is when the icons are re-resolved: an icon fixed by then must leave no
+    stale ``warnings`` entry behind.
+    """
+    icon = tmp_path / "mail.png"
+    icon.write_bytes(b"nope")
+    harness = PluginHarness(
+        SidebarPlugin,
+        {"entries": [_entry(0, icon=str(icon)).to_dict()]},
+        size=REGION,
+    )
+    try:
+        frame = FrameContext(
+            size=REGION,
+            now=0.0,
+            wall=0.0,
+            frame_index=1,
+            fonts=FontRegistry(),
+            icons=IconRegistry(),
+            bus=ReadOnlyBus(harness.bus),
+            min_text_px=24,
+        )
+        harness.plugin.render(frame)
+        assert harness.state()["warnings"], "the broken icon must be listed while it is broken"
+
+        PILImage.new("RGBA", (64, 64), (10, 20, 30, 255)).save(icon)
+        harness.set_settings(entries=[_entry(0, icon=str(icon)).to_dict()])
+        harness.plugin.render(frame)
+        assert harness.state()["warnings"] == [], (
+            "a recovered icon must not leave a stale fallback in status"
+        )
     finally:
         harness.stop()
 

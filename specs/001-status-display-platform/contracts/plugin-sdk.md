@@ -54,7 +54,9 @@ Exceptions are caught by the runner. `degraded` means errors that did not preven
 
 ## Render contract (FR-014, FR-040, FR-045)
 
-`FrameContext` provides: `size` (w, h in pixels), `now` (monotonic seconds), `wall` (epoch seconds), `frame_index`, `fonts` (`fonts.get(name_or_path, size)` with the configured fallback chain), `icons` (`icons.get(name, size)`), `bus` (read-only topic access, see below), `min_text_px`.
+`FrameContext` provides: `size` (w, h in pixels), `now` (monotonic seconds), `wall` (epoch seconds), `frame_index`, `fonts` (`fonts.get(name_or_path, size)` with the configured fallback chain), `icons` (see below), `bus` (read-only topic access, see below), `min_text_px`.
+
+`icons` always answers with a square RGBA image and never raises. `icons.get(name, size)` returns the image; `icons.get_with_status(name, size)` returns `(image, ok)`, where `ok` is `False` when the generic fallback was drawn because the icon was unusable (the built-in sidebar uses the flag to list that fallback in `status`). A name that is not bundled and a path that does not exist both fall back, and an icon file replaced or created at the same path is re-read on the next call, so a recovered icon stops being reported.
 
 `RenderResult` is one of:
 

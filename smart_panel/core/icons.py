@@ -12,6 +12,11 @@ gets a square image back:
   (and sent to the optional ``notify`` callback) so ``status`` lists it instead of
   a broken icon appearing silently.
 
+A warning is not permanent: the cache remembers the source file's identity
+(mtime and size), so a file replaced or created at the same path is re-read, and
+when an icon resolves again its warning is dropped from :attr:`IconRegistry.warnings`
+— ``status`` lists the icons that are unusable *now*, not the ones that once were.
+
 The module mirrors :mod:`smart_panel.core.fonts`: the runner builds one registry,
 hands it to every render frame as ``frame.icons`` and forwards its warnings to the
 structured log, so a missing icon is visible in ``status`` exactly like a missing
@@ -56,7 +61,12 @@ def bundled_icon_path(name: str) -> Path | None:
 
 
 class IconRegistry:
-    """Resolve icons and cache them by (name, size).
+    """Resolve icons and cache them by (name, size) and source identity.
+
+    A cache entry also remembers the resolved file's identity (mtime and size, or
+    ``None`` while it does not exist), so an icon file that is replaced or created
+    at the same path is re-read on the next lookup instead of serving the generic
+    fallback until a restart.
 
     Args:
         directory: Directory of bundled PNGs; defaults to :data:`ICON_DIR`.
@@ -72,7 +82,7 @@ class IconRegistry:
         self._dir = Path(directory) if directory is not None else ICON_DIR
         self._notify = notify
         self.warnings: list[dict[str, Any]] = []
-        self._cache: dict[tuple[str, int], tuple[Image.Image, bool]] = {}
+        self._cache: dict[tuple[str, int], tuple[Image.Image, bool, tuple[int, int] | None]] = {}
         self._generic: dict[int, Image.Image] = {}
 
     # ----------------------------------------------------------------- resolve
@@ -101,18 +111,25 @@ class IconRegistry:
     def get_with_status(
         self, name_or_path: str | Path | None = None, size: int = DEFAULT_ICON_SIZE
     ) -> tuple[Image.Image, bool]:
-        """Return ``(image, ok)`` for an icon; ``ok`` is False for the generic one."""
+        """Return ``(image, ok)`` for an icon; ``ok`` is False for the generic one.
+
+        The cache is keyed by ``(name, size)`` and the resolved file's identity, so
+        a file replaced or created at the same path is re-read rather than serving
+        the fallback the first failure cached. An icon that resolves again drops
+        its entry from :attr:`warnings` (T105).
+        """
         requested = str(name_or_path or "")
         pixels = max(1, int(size))
         key = (requested, pixels)
-        cached = self._cache.get(key)
-        if cached is not None:
-            return cached
         path = self.resolve(requested)
+        stamp = self._stamp(path)
+        cached = self._cache.get(key)
+        if cached is not None and cached[2] == stamp:
+            return cached[0], cached[1]
         if path is None:
             image = self.generic(pixels)
-            self._warn(requested, None, "no bundled icon or file with that name")
             ok = False
+            self._warn(requested, None, "no bundled icon or file with that name")
         else:
             try:
                 with Image.open(path) as opened:
@@ -126,9 +143,11 @@ class IconRegistry:
                 ok = True
             except Exception as exc:  # an unreadable file must not break a frame
                 image = self.generic(pixels)
-                self._warn(requested, path, f"unusable icon file: {exc}")
                 ok = False
-        self._cache[key] = (image, ok)
+                self._warn(requested, path, f"unusable icon file: {exc}")
+        if ok:
+            self._clear(requested)  # it resolves now; an earlier warning is stale
+        self._cache[key] = (image, ok, stamp)
         return image, ok
 
     def get(
@@ -157,6 +176,22 @@ class IconRegistry:
 
     # ------------------------------------------------------------------ warning
 
+    @staticmethod
+    def _stamp(path: Path | None) -> tuple[int, int] | None:
+        """The resolved file's identity (mtime and size), or ``None`` if absent.
+
+        This is what makes a cached failure recoverable: a file written at the same
+        path changes at least its size or its mtime, so the stale entry is discarded
+        and the icon is re-read.
+        """
+        if path is None:
+            return None
+        try:
+            stat = path.stat()
+        except OSError:  # the file vanished between resolve() and here
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
     def _warn(self, icon: str, path: Path | None, reason: str) -> None:
         event: dict[str, Any] = {
             "event": "icon_unusable",
@@ -164,6 +199,14 @@ class IconRegistry:
             "path": str(path) if path is not None else None,
             "reason": reason,
         }
+        # One warning per icon: a repeated failure replaces its own earlier entry
+        # rather than accumulating duplicates, so ``status`` lists each unusable
+        # icon once and the list cannot grow without bound.
+        self._clear(icon)
         self.warnings.append(event)
         if self._notify is not None:
             self._notify(event)
+
+    def _clear(self, icon: str) -> None:
+        """Drop any warning for ``icon`` (it resolves again, or is re-reported)."""
+        self.warnings[:] = [entry for entry in self.warnings if entry.get("icon") != icon]

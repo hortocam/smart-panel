@@ -9,7 +9,9 @@ What one row shows:
 
 * the icon at the left, resolved through ``frame.icons`` (``core/icons.py``); an
   unusable icon falls back to the generic icon and is recorded in
-  :attr:`SidebarRenderer.fallbacks`, which the plugin lists in ``status``;
+  :attr:`SidebarRenderer.fallbacks`, which the plugin lists in ``status`` (the
+  entry is dropped again when the icon resolves, so ``status`` names only the
+  icons that are unusable now);
 * the label (at most 12 characters, truncated to fit) next to it, and
 * a count chip on the right: ``chip_bg``/``chip_fg`` by default, the missed
   alert's severity colour for the built-in alert entry, ``?`` while the count is
@@ -170,7 +172,11 @@ class SidebarRenderer:
         self._last_count: dict[str, Any] = {}
         self._highlight_until: dict[str, float] = {}
         self.fallbacks: dict[str, str] = {}
-        """Icons that fell back to the generic image this run (name -> reason)."""
+        """Icons that fell back to the generic image this run (name -> reason).
+
+        Cleared per icon when it resolves again, so it names only the icons that
+        are unusable now.
+        """
         self.builds = 0
         """How many region images have been rasterised (a cache-miss counter)."""
 
@@ -358,14 +364,20 @@ def _font(frame: Any, name: str, size: int) -> Any:
 
 
 def _icon(frame: Any, name: str, pixels: int, renderer: SidebarRenderer) -> PILImage.Image:
-    """The icon image for ``name``, recording a generic fallback when one happens."""
+    """The icon image for ``name``, recording (or clearing) a generic fallback.
+
+    An icon that resolves again drops its :attr:`SidebarRenderer.fallbacks` entry,
+    so the sidebar lists only the icons that are unusable now.
+    """
     icons = getattr(frame, "icons", None)
     if icons is not None:
         getter = getattr(icons, "get_with_status", None)
         if callable(getter):
             try:
                 image, ok = getter(name, pixels)
-                if not ok:
+                if ok:
+                    renderer.fallbacks.pop(str(name), None)
+                else:
                     renderer.fallbacks[str(name)] = "unusable icon; drew the generic icon"
                 return image
             except Exception as exc:  # a broken registry must not break a frame
