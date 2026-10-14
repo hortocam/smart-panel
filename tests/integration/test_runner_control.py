@@ -69,13 +69,26 @@ class _RecordingSink(NullSink):
         self.applied.append(n)
 
 
-def _wait_until(predicate, timeout: float = 5.0) -> None:
+# Both waits below poll for an effect the runner's background loops produce: the
+# conformant plugin's first render, and its instance reaching ``ok`` in
+# ``status``. The runner paces rendering off the wall clock
+# (``frame_interval_s``), so no fake-clock step is involved. A starved CI leg
+# leaves those threads unscheduled for seconds: 5 s was too tight, so this is the
+# 30 s the sibling e2e hosts settled on for their first-frame ``start``
+# (``test_gauges_e2e``, ``test_sidebar_e2e``, ``test_plugin_isolation``,
+# ``test_dropin_plugin``; see 4ea0909). It stays bounded: a wait whose effect
+# never lands still fails, now naming the effect.
+EFFECT_WAIT_S = 30.0
+
+
+def _wait_until(predicate, *, what: str, timeout: float = EFFECT_WAIT_S) -> None:
+    """Poll ``predicate`` until it holds, or fail naming the effect waited for."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
             return
         time.sleep(0.01)
-    raise AssertionError("condition was not met before the deadline")
+    raise AssertionError(f"{what} never appeared within {timeout:g}s")
 
 
 @pytest.fixture
@@ -126,12 +139,15 @@ def test_a_plugin_is_handed_a_frame_sized_to_its_region(runtime: Path, tmp_path:
     runner.start()
     try:
         plugin = runner._instances["conformant"]  # noqa: SLF001 - inspect the live instance
-        _wait_until(lambda: plugin.sizes)
+        _wait_until(lambda: plugin.sizes, what="the conformant plugin's first render")
 
         # The contract says an Image result is exactly frame.size; a plugin that
         # obeys it must be handed its region, not the 1920x462 canvas.
         assert plugin.sizes[-1] == REGION
-        _wait_until(lambda: runner.status()["plugins"]["conformant"]["state"] == "ok")
+        _wait_until(
+            lambda: runner.status()["plugins"]["conformant"]["state"] == "ok",
+            what="the conformant instance to reach ok",
+        )
     finally:
         runner.stop()
 
