@@ -119,14 +119,21 @@ Source: <https://dejavu-fonts.github.io/License.html> (the DejaVu project's
 
 ## Tabler Icons
 
-The bundled sidebar/status icons (`smart_panel/assets/icons/`, 64 px PNGs
-derived from Tabler Icons, no brand logos) are MIT-licensed. **This entry is
-completed by task T105**, which bundles the icons; until then no Tabler-derived
-files are present in the repository and nothing here redistributes them.
+**Files covered:** `smart_panel/assets/icons/*.png` — the bundled sidebar icons
+(`mail`, `calendar`, `chat`, `alert`, `check`, `cloud`, `server`, `git`, `bell`,
+`home`, `shield`, `clock`; 64 px PNGs; see `smart_panel/core/icons.py`).
+
+**License:** MIT, the same terms as this project's [LICENSE](LICENSE).
 
 - Upstream: <https://github.com/tabler/tabler-icons>
-- License: MIT (Copyright (c) 2020-2024 Paweł Kuna) — the same terms as this
-  project's [LICENSE](LICENSE).
+- Copyright: Copyright (c) 2020-2024 Paweł Kuna
+- Source artwork: the `@tabler/icons-png` package (`icons/outline/*.png`, 240 px),
+  downsampled to 64 px. Two names differ from their Tabler file: the sidebar's
+  `chat` is Tabler's `message`, and its `alert` is Tabler's `alert-triangle`. No
+  brand logos are bundled.
+
+No vendor software or firmware is included; the icons are original MIT-licensed
+artwork, so their license text is the project's own (reproduced above).
 
 ## Panel protocol references
 
