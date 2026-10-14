@@ -314,7 +314,10 @@ class SwitchHost:
         self.clock.write_text("0\n", encoding="utf-8")
 
     def start(self) -> subprocess.CompletedProcess[str]:
-        return self.cli("--json", "--timeout", "15", "start")
+        # The CLI detaches a ``run`` child and waits ``max(--timeout, 10)`` for
+        # its first frame; 15 s was too tight for a starved CI leg, so the host
+        # uses the 30 s the sibling e2e hosts settled on. ``cli`` waits 60 s.
+        return self.cli("--json", "--timeout", "30", "start")
 
     def stop(self) -> None:
         try:
