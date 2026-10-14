@@ -133,7 +133,14 @@ def make_dispatch(runner: Any) -> Callable[[protocol.Request], Any]:
         except SecretError as exc:
             raise protocol.ProtocolError("invalid_input", str(exc)) from exc
         except CommandError as exc:
-            raise protocol.ProtocolError("plugin_error", exc.message) from exc
+            # ``CommandError`` carries the error code the plugin wants reported
+            # (``contracts/plugin-sdk.md``: "raises CommandError(code, message) for
+            # expected failures"), so honour it: a validation failure inside a
+            # plugin's verb is ``invalid_input`` — exit 2, as
+            # ``contracts/builtin-plugins.md`` requires — not ``plugin_error``.
+            # Anything outside the documented set degrades to ``plugin_error``.
+            code = exc.code if exc.code in protocol.ERROR_CODES else "plugin_error"
+            raise protocol.ProtocolError(code, exc.message) from exc
         except SecretNotFound as exc:
             raise protocol.ProtocolError(
                 "not_found", f"no secret named {exc.args[0]!r}"

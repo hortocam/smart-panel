@@ -1,9 +1,9 @@
-"""The built-in plugin registry (T061).
+"""The built-in plugin registry (T061, T072).
 
 The loader reads this mapping first (``PluginLoader._load_builtin_registry``),
 then entry points, then the drop-in directory. It lists the built-ins that ship
-with the project; later phases add ``alerts``, ``sources``, ``crawl``, ``gauges``
-and ``sidebar`` here.
+with the project: ``text`` (US1) and ``alerts`` (US2, T072); later phases add
+``sources``, ``crawl``, ``gauges`` and ``sidebar`` here.
 
 :func:`builtin_instances` is the default-config seed: every registered built-in
 gets one enabled instance with its schema defaults, so a fresh install has a
@@ -16,11 +16,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from smart_panel.plugins.alerts import AlertsPlugin
 from smart_panel.plugins.text import TextPlugin
 from smart_panel.sdk.plugin import Plugin
 
 BUILTIN_PLUGINS: dict[str, type[Plugin]] = {
     TextPlugin.manifest.name: TextPlugin,
+    AlertsPlugin.manifest.name: AlertsPlugin,
 }
 
 
@@ -37,4 +39,10 @@ def builtin_instances() -> dict[str, dict[str, Any]]:
     }
 
 
-__all__ = ["BUILTIN_PLUGINS", "TextPlugin", "builtin_instances", "builtin_plugins"]
+__all__ = [
+    "BUILTIN_PLUGINS",
+    "AlertsPlugin",
+    "TextPlugin",
+    "builtin_instances",
+    "builtin_plugins",
+]

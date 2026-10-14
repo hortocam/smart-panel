@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -136,6 +137,13 @@ class PluginHarness:
         settings: Partial settings; validated (defaults filled) before use.
         size: Region size for the render ``FrameContext``.
         clock: Clock to use (a fresh :class:`FakeClock` by default).
+        alert_sink: Optional plugin instance declaring ``alert_sink``; when
+            given, ``ctx.alert`` is routed to it exactly as the core routes it
+            (its ``push`` verb), so a test can assert what an alert-source
+            plugin raises reaches the alerts instance with the same validation.
+            With no sink, calls are recorded on :attr:`alerts` alone.
+        db: An explicit ``sqlite3`` connection for ``ctx.db()``; by default an
+            in-memory database, so a plugin that owns tables can be driven here.
     """
 
     def __init__(
@@ -144,6 +152,8 @@ class PluginHarness:
         settings: dict[str, Any] | None = None,
         size: tuple[int, int] = (1920, 462),
         clock: Any = None,
+        alert_sink: Any = None,
+        db: Any = None,
     ) -> None:
         self.plugin_class = plugin_class
         self.manifest = plugin_class.manifest
@@ -152,6 +162,8 @@ class PluginHarness:
         self.bus = Bus(clock=self.clock)
         self.log = _NullLog()
         self.alerts: list[dict[str, Any]] = []
+        self.alert_sink = alert_sink
+        self._db = db if db is not None else sqlite3.connect(":memory:", check_same_thread=False)
         self.validated_settings = validate(self.manifest.settings, settings or {})
 
         self.ctx = InstanceContext(
@@ -162,15 +174,20 @@ class PluginHarness:
             bus=self.bus,
             kv=_DictKV(),
             clock=self.clock,
-            alert_handler=self._record_alert,
+            db_factory=lambda: self._db,
+            alert_handler=self._dispatch_alert,
         )
         self.plugin: Plugin = plugin_class(self.ctx, self.validated_settings)
         self._image: PILImage.Image | None = None
         self._frame_index = 0
         self.plugin.start()
 
-    def _record_alert(self, **kwargs: Any) -> dict[str, Any]:
+    def _dispatch_alert(self, **kwargs: Any) -> dict[str, Any]:
+        """Record ``ctx.alert`` and, when a sink is configured, deliver it."""
         self.alerts.append(kwargs)
+        if self.alert_sink is not None:
+            payload = {key: value for key, value in kwargs.items() if value is not None}
+            return self.alert_sink.handle_command("push", payload)
         return {"state": "queued"}
 
     def frame_context(self) -> FrameContext:

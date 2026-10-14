@@ -16,6 +16,15 @@ Static text, used for first-run verification (US1) and as the reference sample p
 
 Commands: `set --text T` (spoolable). An empty `T` is valid and pinned: it sets the field to no text, and the region renders a background-only frame — the composed canvas keeps its size and carries no text ink (the region's own `bg` still fills it, so an empty frame paints the background, not necessarily the default black). This is the only way to blank a text region, the plugin having no `clear` verb. It differs deliberately from the `alerts` `push` rejection of an empty `message` below: a notification must communicate something, whereas a display field may legitimately carry nothing. `set --text ""` is therefore neither refused nor clamped/substituted.
 
+### Empty states: a region paints, an overlay draws nothing
+
+The two empty states are different pictures and must stay different, now that a region built-in (`text`) and an overlay built-in (`alerts`) both exist:
+
+- **A region plugin has no `Inactive` empty state.** It returns an `Image` exactly `region_size`, filling it with its own background, even when it has nothing to say. `Inactive` would be wrong: the compositor skips a `None` layer, so the region would then show the *canvas* background (`#000000`) instead of the plugin's `bg` — a visible difference for any `bg` other than black. This is why `text set --text ""` paints the region's `bg` rather than leaving the rectangle undrawn. Pinned by `tests/unit/test_text_empty.py` and `tests/integration/test_text_empty_blank_frame.py`.
+- **An overlay plugin's empty state is `Inactive`.** Nothing is drawn and the layer is cleared, so the region underneath shows through — that is how `alerts` uncovers `main` when its alert times out or is dismissed. Pinned by `tests/integration/test_alerts_e2e.py` (the composed canvas returns to the `main` region's own pixels).
+
+A region that returned `Inactive` while its instance is healthy, or an overlay that painted an opaque "empty" layer, would each be a contract violation.
+
 ## `alerts` (overlay on `main`)
 
 Implements FR-017 to FR-024. Queue, preemption, and states per [data-model.md](../data-model.md). Declares the `alert_sink` capability: alerts raised by other plugins through `ctx.alert(...)` (capability `alert_source`) are routed here by the core and validated like `alert push`.

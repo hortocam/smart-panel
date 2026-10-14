@@ -257,3 +257,20 @@ class RenderWorker:
         with self._lock:
             self._state = InstanceState.DEGRADED
             self._last_error = message
+
+
+def bind_alert_router(worker: RenderWorker, router: Any) -> None:
+    """Attach the generic alert router to the instance ``worker`` renders (T132).
+
+    Every instance the runner starts goes through here, so ``ctx.alert`` called
+    from a plugin's render thread or from a ``ctx.spawn`` task reaches the same
+    single router the control channel uses — the router resolves the
+    ``alert_sink`` instance from the live instance map by manifest capability,
+    and the core still names no plugin.
+
+    A plugin that lacks the ``alert_source`` capability is refused inside
+    ``ctx.alert`` itself, before the handler is reached.
+    """
+    ctx = getattr(getattr(worker, "plugin", None), "ctx", None)
+    if ctx is not None:
+        ctx.alert_handler = None if router is None else router.route
