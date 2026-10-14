@@ -60,6 +60,12 @@ QUEUE_CAP = 50
 class CliHost:
     """A CLI host pointed at a runner with a file sink and a fake clock."""
 
+    #: The CLI's own bounded wait for a detached runner's first frame.
+    START_TIMEOUT_S = 60
+    #: How long the host itself keeps waiting for that runner once the CLI's
+    #: bound has expired (a child still starting under load is not a dead one).
+    START_GRACE_S = 60
+
     def __init__(self, base: Path, home: Path) -> None:
         self.base = base
         self.home = home
@@ -166,21 +172,30 @@ class CliHost:
         self.clock.write_text(f"{value}\n", encoding="utf-8")
 
     def start(self) -> dict:
-        """Start the runner and wait for its first frame.
+        """Start the runner and wait until it is actually publishing frames.
 
-        The first-frame wait is generous (30 s): a loaded macOS CI runner can
-        take far longer than a healthy host to import, build its runtime and
-        publish a first frame, so a start that gives up too early fails for the
-        host's schedule rather than for a bug. On failure the runner's own log
-        tail and pid file are attached, because the detached runner discards its
-        stderr and the bare ``timeout`` cannot say whether it died or was still
-        coming up when the wait expired.
+        The CLI's own detached-start wait is bounded (``START_TIMEOUT_S``); when
+        it expires the host keeps waiting for the runner the CLI detached
+        (``START_GRACE_S``). The two waits are separate because the CLI's bound
+        expiring does not mean the child died — the CLI cannot tell the two
+        apart, and a child still importing under a starved CI host comes up
+        moments later.
+
+        Why the bound is 60 s rather than the 30 s the sibling e2e hosts use:
+        macos-latest jobs have been observed to starve a *render worker* for over
+        25 s (``test_plugin_isolation`` fails waiting 25 s for a first render),
+        and the detached runner pays the same starvation before it can open its
+        control socket — 15 s was not enough (see the failing-run URLs in the
+        pull request). Only when neither wait sees a runner does ``start`` fail,
+        with the pid file, the runtime listing and the log tail attached: the
+        detached runner discards its stderr, so a bare ``timeout`` cannot say
+        whether it died or was still coming up.
         """
         try:
             return self.ok(
                 "--json",
                 "--timeout",
-                "30",
+                str(self.START_TIMEOUT_S),
                 "start",
                 "--sink",
                 "files",
@@ -188,24 +203,56 @@ class CliHost:
                 str(self.frames),
                 "--clock-file",
                 str(self.clock),
-                timeout=60,
+                timeout=self.START_TIMEOUT_S + 30,
             )
         except AssertionError as exc:
+            late = self.wait_for_runner(self.START_GRACE_S)
+            if late is not None:
+                return late
             raise AssertionError(f"{exc}\n{self._start_diagnostic()}") from exc
 
+    def wait_for_runner(self, timeout: float) -> dict | None:
+        """Wait until a runner answers ``status`` with a frame already sent.
+
+        Returns the first such ``status`` payload, or ``None`` when nothing
+        answers for ``timeout`` seconds. A no-panel runner up but short of its
+        first frame is not enough: ``start`` must not return before frames flow,
+        exactly as the CLI's own wait requires.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                payload, code = self.data("--json", "status", timeout=30)
+            except (subprocess.TimeoutExpired, json.JSONDecodeError):
+                time.sleep(0.2)
+                continue
+            if code == 0:
+                data = payload.get("data") or {}
+                frames = data.get("frames") or {}
+                if int(frames.get("sent") or 0) > 0:
+                    return data
+            time.sleep(0.2)
+        return None
+
     def _start_diagnostic(self) -> str:
-        """What the runner left behind when a ``start`` timed out.
+        """What the runner left behind when ``start`` never saw it.
 
         A start that never answers the control socket is either a runner that
-        exited (a lock conflict, an invalid config, an import error) or one that
-        is still coming up; the log tail and the pid file are what tell those
-        apart after the fact, without a re-run.
+        exited (a lock conflict, an invalid config, an import error) or one still
+        coming up under load; the runtime listing, the pid file and the log are
+        what tell those apart after the fact, without a re-run.
         """
         pid = self.runtime / "runner.pid"
         log = self.home / "runner.log"
+        try:
+            entries = sorted(path.name for path in self.runtime.iterdir())
+        except OSError as exc:  # pragma: no cover - the runtime always exists here
+            entries = [f"<unreadable: {exc}>"]
+        size = log.stat().st_size if log.exists() else 0
         lines = [
-            f"start diagnostic: runner.pid exists={pid.exists()} ({pid})",
-            f"                  runner.log exists={log.exists()} ({log})",
+            f"start diagnostic: runtime={self.runtime} entries={entries}",
+            f"                  runner.pid exists={pid.exists()} ({pid})",
+            f"                  runner.log exists={log.exists()} size={size} ({log})",
         ]
         if pid.exists():
             lines.append(f"  runner.pid={pid.read_text(encoding='utf-8').strip()!r}")
