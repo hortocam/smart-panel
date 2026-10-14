@@ -46,4 +46,4 @@ jobs:
         run: ruff check .
 
       - name: Test (hardware tests skipped)
-        run: pytest -m "not hardware"
+        run: pytest -m "not hardware" -rs
