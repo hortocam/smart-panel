@@ -5,6 +5,11 @@
 socket and the first frame (or the timeout), exiting 6 when a runner is already
 running. Every other command is one control request.
 
+A start that times out says which of the two failures it was: the detached child
+is kept, so the wait can fail fast — with the child's exit status as the error
+code, and its captured stderr under ``SMART_PANEL_TESTING=1`` — when the child
+is already dead, and otherwise report whether the child is still running.
+
 The test-only ``--clock-file`` (honored only under ``SMART_PANEL_TESTING=1``,
 ``runner.py``) is threaded through both ``run`` and ``start`` so a subprocess
 integration test can advance a fake clock.
@@ -24,12 +29,17 @@ from smart_panel.cli.commands import (
     no_args,
     parse_options,
 )
-from smart_panel.cli.output import CliError, ConflictError, UsageError
+from smart_panel.cli.output import EXIT_CODE_NAMES, CliError, ConflictError, UsageError
 from smart_panel.core import paths
 
 DEFAULT_START_TIMEOUT_S = 10.0
 _SINK_CHOICES = ("hid", "files", "null")
 _START_OPTS = {"sink": str, "files-dir": str, "clock-file": str}
+# The two codes a start poll reads as "not up yet": the socket is not there, or
+# it is there and has not answered. Either can simply mean the child is still
+# coming up, so the wait keeps polling to its deadline — unless the child has
+# already exited, which no amount of waiting will fix.
+_NOT_UP_CODES = ("runner_not_running", "timeout")
 
 
 def _validate_sink(value: str) -> str:
@@ -70,7 +80,17 @@ def cmd_stop(ctx: CliContext, tokens: list[str]) -> dict[str, Any]:
     args: dict[str, Any] = {}
     if "timeout" in opts:
         args["timeout_s"] = opts["timeout"]
-    ctx.call("runner.stop", args)
+    try:
+        ctx.call("runner.stop", args)
+    except CliError as exc:
+        # A runner that is mid-teardown has already closed the control socket,
+        # and a starved one answers nothing, so the request itself fails with
+        # runner_not_running or timeout while ``runner.pid`` still names a live
+        # process. Reporting that as "not running" claims a stop that has not
+        # happened; the wait below decides, and it checks the pid as well as
+        # the socket. With no live process it is the documented exit 3.
+        if exc.code not in _NOT_UP_CODES or not _runner_process_alive():
+            raise
     _wait_for_stop(ctx, float(opts.get("timeout", max(ctx.timeout, 10.0))))
     return {"stopping": True, "state": "stopped"}
 
@@ -153,36 +173,82 @@ def _start_detached(
 
     env = dict(os.environ)
     env["SMART_PANEL_HOME"] = str(ctx.home)
-    subprocess.Popen(
-        argv,
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        env=env,
-        cwd=str(Path.cwd()),
-    )
-    return _wait_for_first_frame(ctx, timeout)
+    stderr_sink, stderr_log = _child_stderr_sink(ctx)
+    try:
+        child = subprocess.Popen(
+            argv,
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_sink,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            cwd=str(Path.cwd()),
+        )
+    finally:
+        if stderr_log is not None:
+            stderr_sink.close()  # the child holds its own copy of the descriptor
+    # The child is kept so the wait can tell a dead child from a slow one: its
+    # exit is the one outcome no amount of waiting turns into a first frame.
+    return _wait_for_first_frame(ctx, timeout, child=child, stderr_log=stderr_log)
+
+
+def _child_stderr_sink(ctx: CliContext) -> tuple[Any, Path | None]:
+    """Where a detached child's stderr goes, and the file when it is captured.
+
+    A detached runner's stderr has nowhere to go, so its own failure message —
+    ``smart-panel: another runner already holds .../runner.lock``, say — is
+    discarded and the parent is left with a bare timeout. Under
+    ``SMART_PANEL_TESTING=1`` it is captured to ``<home>/start-stderr.log`` so
+    that a start which dies leaves the child's message behind; in production it
+    stays ``DEVNULL``. Diagnostics must never be what breaks a start, so a sink
+    that cannot be opened falls back to ``DEVNULL``.
+    """
+    if os.environ.get("SMART_PANEL_TESTING") != "1":
+        return subprocess.DEVNULL, None
+    path = ctx.home / "start-stderr.log"
+    try:
+        ctx.home.mkdir(parents=True, exist_ok=True)
+        return path.open("wb"), path
+    except OSError:
+        return subprocess.DEVNULL, None
 
 
 def _is_running(ctx: CliContext) -> bool:
+    """Whether a runner is on the control socket — including a silent one.
+
+    ``runner_not_running`` means the socket is gone, so no runner is there.
+    ``timeout`` means the socket accepted the connection but the runner did not
+    answer in time: that is a runner which is starved or mid-teardown and still
+    holds the single-instance lock, so it counts as running. Calling it "gone"
+    is what handed a second ``start`` a lock the live process still held — its
+    child exited 6 and the parent reported a timeout instead of the conflict.
+    """
     try:
         ctx.call("runner.status")
     except CliError as exc:
+        if exc.code == "timeout":
+            return True
         if exc.code == "runner_not_running":
             return False
         raise
     return True
 
 
-def _wait_for_first_frame(ctx: CliContext, timeout: float) -> dict[str, Any]:
+def _wait_for_first_frame(
+    ctx: CliContext,
+    timeout: float,
+    *,
+    child: Any = None,
+    stderr_log: Path | None = None,
+) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     last: dict[str, Any] | None = None
     while time.monotonic() < deadline:
         try:
             data = ctx.call("runner.status")
         except CliError as exc:
-            if exc.code == "runner_not_running":
+            if exc.code in _NOT_UP_CODES:
+                _raise_if_child_exited(child, stderr_log)
                 time.sleep(0.05)
                 continue
             raise
@@ -192,27 +258,92 @@ def _wait_for_first_frame(ctx: CliContext, timeout: float) -> dict[str, Any]:
             return data
         time.sleep(0.05)
     raise CliError(
-        f"the runner did not send a first frame within {timeout:g} s{_start_diagnostic(last)}",
+        f"the runner did not send a first frame within {timeout:g} s"
+        f"{_start_diagnostic(last, child)}",
         code="timeout",
     )
 
 
-def _start_diagnostic(status: dict[str, Any] | None) -> str:
+def _raise_if_child_exited(child: Any, stderr_log: Path | None) -> None:
+    """Fail a start as soon as the child it spawned is already gone.
+
+    The common case is the child losing the single-instance lock (exit 6), but
+    any early exit is worth saying out loud: the status becomes the error code
+    (the child is this same CLI, so its status *is* a documented code) and,
+    with its stderr captured, its own message rides along.
+    """
+    if child is None:
+        return
+    status = child.poll()
+    if status is None:
+        return
+    name = EXIT_CODE_NAMES.get(status)
+    label = f" ({name})" if name is not None else ""
+    raise CliError(
+        f"the runner exited with status {status}{label} before sending a first frame"
+        f"{_stderr_excerpt(stderr_log)}",
+        code=_child_error_code(status),
+    )
+
+
+def _child_error_code(status: int) -> str:
+    """The documented error code for a departed child's exit status.
+
+    The child is ``smart_panel.cli.main run``, so its status is one of the
+    documented CLI exit codes. Reporting it keeps ``start`` honest: a child
+    that lost the lock exits 6, so ``start`` is a ``conflict`` (``cli.md``:
+    "Exit 6 if already running"), not an anonymous timeout.
+    """
+    name = EXIT_CODE_NAMES.get(status, "internal")
+    if name in ("ok", "error"):
+        return "internal"
+    return name
+
+
+def _stderr_excerpt(stderr_log: Path | None, *, limit: int = 160) -> str:
+    """The captured child's own last stderr line, for a start that died."""
+    if stderr_log is None:
+        return ""
+    try:
+        text = stderr_log.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    if not text:
+        return ""
+    line = text.splitlines()[-1].strip()
+    if len(line) > limit:
+        line = line[: limit - 3] + "..."
+    return f": {line}"
+
+
+def _start_diagnostic(status: dict[str, Any] | None, child: Any = None) -> str:
     """Detail for a start/restart timeout so a stalled start is diagnosable.
 
     A start can time out either because the new runner never answered the
     control socket (it exited) or because it answered but stayed short of a
     first frame (still ``starting``, or up with ``sent`` at zero). Those need
     different fixes, and the bare timeout message cannot tell them apart, so
-    report the last observed ``status``.
+    report the last observed ``status`` — and, when ``start`` spawned the
+    child, whether that child is still running or already dead.
     """
     if status is None:
-        return " (the runner never answered the control socket)"
+        return f" (the runner never answered the control socket{_child_state(child)})"
     frames = status.get("frames") or {}
     return (
         f" (state={status.get('state')!r}, sent={frames.get('sent')}, "
-        f"plugins={status.get('plugins')}, errors={status.get('errors')})"
+        f"plugins={status.get('plugins')}, errors={status.get('errors')}"
+        f"{_child_state(child)})"
     )
+
+
+def _child_state(child: Any) -> str:
+    """``; the child ...`` for the diagnostic, empty without a spawned child."""
+    if child is None:
+        return ""
+    status = child.poll()
+    if status is None:
+        return "; the child is still running"
+    return f"; the child exited with status {status}"
 
 
 def _wait_for_stop(ctx: CliContext, timeout: float) -> None:

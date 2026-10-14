@@ -12,6 +12,15 @@ account could stand up a socket at the shared path and answer as the runner.
 Second, the CLI never creates the runtime directory: with no runtime spool the
 owner's push waits in ``<home>/spool-pending`` (imported by the runner on start),
 and any other account is refused with exit code 3.
+
+The client also keeps two "no answer" shapes apart, because the CLI's start/stop
+waiting turns on the difference. A refused connect (``ENOENT``,
+``ECONNREFUSED``) is :class:`RunnerUnavailable` — exit 3, no runner — while a
+connection that is *accepted* and then gives no answer (the hello handshake
+lives inside :meth:`ControlClient.connect`) is :class:`RunnerNotAnswering` —
+exit 1 ``timeout``, a runner that is there but starved, mid-teardown, or gone
+the moment it accepted, still holding its single-instance lock. That split
+covers every path out of the client, the streamed ``logs --follow`` included.
 """
 
 from __future__ import annotations
@@ -51,6 +60,22 @@ class RunnerUnavailable(ControlClientError):
     code = "runner_not_running"
 
 
+class RunnerNotAnswering(ControlClientError):
+    """A runner accepted the connection but gave no answer.
+
+    Deliberately not :class:`RunnerUnavailable`: there the socket is not there
+    at all, while here the connect succeeded, so a runner *is* running — it is
+    starved, half-way through teardown, or closes the connection it just
+    accepted, and still holds the single-instance lock. Reporting that as
+    ``runner_not_running`` (exit 3) tells the caller the runner is gone and
+    walks a second ``start`` into the lock the live process still holds, so this
+    carries the documented ``timeout`` code (exit 1) instead: "the runner did
+    not answer", not "there is no runner".
+    """
+
+    code = "timeout"
+
+
 class ImpersonationRefused(ControlClientError):
     """The runtime directory or socket is owned by an unrelated account."""
 
@@ -61,6 +86,16 @@ class SpoolRefused(ControlClientError):
     """The runner is down and this account may not create the runtime directory."""
 
     code = "runner_not_running"
+
+
+def _is_silence(exc: OSError) -> bool:
+    """Whether ``exc`` is an unanswered socket rather than a refused one.
+
+    ``socket.timeout`` is :class:`TimeoutError`, which is an :class:`OSError`:
+    a live-but-silent runner reaches the same ``except OSError`` arm as a
+    missing socket, so the two have to be told apart explicitly here.
+    """
+    return isinstance(exc, TimeoutError)
 
 
 class ControlClient:
@@ -127,6 +162,8 @@ class ControlClient:
         Raises:
             ImpersonationRefused: The path is owned by an unrelated account.
             OSError: The socket is missing or refusing connections.
+            RunnerNotAnswering: The socket accepted but the hello went
+                unanswered, or the runner closed the connection first.
             ControlClientError: The runner answered the handshake with an error.
         """
         self._guard_owner()
@@ -143,7 +180,7 @@ class ControlClient:
         reply = self._receive()
         if reply is None:
             self.close()
-            raise RunnerUnavailable("the runner closed the connection during the handshake")
+            raise self._closed_after_accept()
         if "hello" not in reply:
             response = protocol.Response.from_obj(reply)
             self.close()
@@ -189,6 +226,8 @@ class ControlClient:
 
         Raises:
             RunnerUnavailable: No runner answers and the command is not spoolable.
+            RunnerNotAnswering: The socket accepted the connection but the
+                runner did not answer in time (``timeout``, exit 1).
             SpoolRefused: No runner answers, the runtime directory is gone, and
                 this account may not create it.
             SpoolFull: The spool already holds the maximum number of entries.
@@ -199,13 +238,44 @@ class ControlClient:
             except OSError as exc:
                 if spoolable and exc.errno in _SPOOLABLE_ERRNOS:
                     return self._spool(cmd, args, received_at=received_at)
+                if _is_silence(exc):
+                    raise self._not_answering(exc) from exc
                 raise RunnerUnavailable(f"the runner is not running: {exc}") from exc
         request = protocol.Request(cmd=cmd, args=dict(args or {}), id=next(self._ids))
         self._send(request.to_obj())
-        reply = self._receive()
+        try:
+            reply = self._receive()
+        except OSError as exc:
+            if _is_silence(exc):
+                raise self._not_answering(exc) from exc
+            raise
         if reply is None:
-            raise RunnerUnavailable("the runner closed the connection")
+            raise self._closed_after_accept()
         return protocol.Response.from_obj(reply)
+
+    def _not_answering(self, cause: OSError) -> RunnerNotAnswering:
+        """The error for a socket that accepted the connect but stayed silent.
+
+        The handshake lives inside :meth:`connect`, so both a connect timeout
+        and an unanswered hello (and an unanswered command) arrive here as an
+        :class:`OSError`; all three mean the same thing — a runner is there and
+        is not answering — and none of them mean "no runner".
+        """
+        return RunnerNotAnswering(
+            f"the runner did not answer the control socket within {self.timeout:g} s: {cause}"
+        )
+
+    def _closed_after_accept(self) -> RunnerNotAnswering:
+        """The error for a runner that accepted the connection, then closed it.
+
+        The same bucket as silence: the connect succeeded, so a runner *is*
+        there — it is gone the moment it accepted (mid-teardown, or a handler
+        that failed) — and the answer is not the ``ENOENT``/``ECONNREFUSED``
+        "there is no runner" of exit 3, but the documented ``timeout`` (exit 1).
+        """
+        return RunnerNotAnswering(
+            "the runner accepted the control connection and then closed it without answering"
+        )
 
     def stream(self, cmd: str, args: dict[str, Any] | None = None) -> Any:
         """Send one command and yield each event line until the server closes.
@@ -218,12 +288,16 @@ class ControlClient:
         expected to stay parked while the server has nothing to say, so the
         socket is switched to blocking reads for the stream itself
         (``contracts/cli.md``, "Streaming commands") — an idle gap must not exit
-        the follow. A connect failure is mapped to
-        :class:`RunnerUnavailable` so a follow with no runner reports
-        ``runner_not_running`` (exit 3), matching :meth:`call`.
+        the follow. A *refused* connect (``ENOENT``/``ECONNREFUSED``) is mapped
+        to :class:`RunnerUnavailable` so a follow with no runner reports
+        ``runner_not_running`` (exit 3), while a connect that was *accepted* and
+        then gave no answer — a silent hello, or a close — is
+        :class:`RunnerNotAnswering` (``timeout``, exit 1), exactly as
+        :meth:`call` splits them.
 
         Raises:
             RunnerUnavailable: No runner is listening on the socket.
+            RunnerNotAnswering: The socket accepted but the answer never came.
             ImpersonationRefused: The path is owned by an unrelated account.
             ControlClientError: The runner answered the handshake with an error.
         """
@@ -231,6 +305,8 @@ class ControlClient:
             try:
                 self.connect()
             except OSError as exc:
+                if _is_silence(exc):
+                    raise self._not_answering(exc) from exc
                 raise RunnerUnavailable(f"the runner is not running: {exc}") from exc
         assert self._sock is not None
         self._sock.settimeout(None)

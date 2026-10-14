@@ -11,7 +11,9 @@ Three exits are pinned here (``contracts/cli.md``, "Streaming commands"): a
 genuine server close exits 0; ``--timeout`` bounds only the connect and
 handshake, so an *idle* follow stays parked (it does not exit while the log is
 quiet); and a follow with **no runner** exits 3 ``runner_not_running``, like the
-non-follow ``logs`` path.
+non-follow ``logs`` path. A socket that *accepts* the connect and then answers
+nothing is the other "no answer" shape — a runner that is there — and exits 1
+``timeout`` (the same split ``ControlClient.call`` makes).
 
 This drives the real CLI as a subprocess against a real in-process
 ``ControlServer`` with a scripted dispatch (the harness style of
@@ -24,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -201,3 +204,32 @@ def test_follow_with_no_runner_exits_runner_not_running(follow_host: FollowHost)
     payload = json.loads(proc.stdout.splitlines()[0])
     assert payload["ok"] is False
     assert payload["error"]["code"] == "runner_not_running"
+
+
+def test_follow_of_a_silent_socket_is_not_reported_as_no_runner(
+    follow_host: FollowHost,
+) -> None:
+    """A follow whose hello is never answered exits 1 ``timeout``, not 3.
+
+    A socket that accepts the connection and then says nothing is a runner that
+    *is* there — starved, or mid-teardown, still holding the single-instance
+    lock. ``--timeout`` bounds the connect and hello handshake, so this is the
+    follow's one bounded silence; calling it ``runner_not_running`` (exit 3)
+    would claim there is no runner while one is live. It must carry the
+    documented ``timeout`` code (exit 1), like ``ControlClient.call``.
+    """
+    follow_host.runtime.mkdir(parents=True, exist_ok=True)
+    os.chmod(follow_host.runtime, 0o755)
+    silent = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    silent.bind(str(follow_host.runtime / "control.sock"))
+    silent.listen(1)  # accepts the connect into the backlog, never answers
+    try:
+        proc = follow_host.cli("--json", "--timeout", "1", "logs", "--follow")
+    finally:
+        silent.close()
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout.splitlines()[0])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "timeout"
+    assert "did not answer" in payload["error"]["message"]
