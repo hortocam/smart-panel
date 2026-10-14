@@ -27,9 +27,11 @@ import json
 import os
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -233,3 +235,44 @@ def test_follow_of_a_silent_socket_is_not_reported_as_no_runner(
     assert payload["ok"] is False
     assert payload["error"]["code"] == "timeout"
     assert "did not answer" in payload["error"]["message"]
+
+
+def test_follow_against_a_resetting_socket_is_timeout_not_runner_not_running(
+    follow_host: FollowHost,
+) -> None:
+    """A follow whose *accepted* connection resets exits 1 ``timeout``, not 3.
+
+    The third shape beside silence and a clean close: the runner accepted the
+    connection and then died with the socket up, so the follow's send or read
+    raises ``EPIPE``/``ECONNRESET``. A connection that was accepted is a runner
+    that is there, so ``runner_not_running`` (exit 3) would be a lie; the reset
+    carries the documented ``timeout`` code (exit 1), like the one-shot path.
+    """
+    follow_host.runtime.mkdir(parents=True, exist_ok=True)
+    os.chmod(follow_host.runtime, 0o755)
+    path = follow_host.runtime / "control.sock"
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(str(path))
+    sock.listen(1)
+
+    def serve() -> None:
+        try:
+            connection, _ = sock.accept()
+        except OSError:
+            return
+        # SO_LINGER zero is an abortive close: the client sees a reset, not EOF.
+        connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        connection.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        proc = follow_host.cli("--json", "--timeout", "1", "logs", "--follow")
+    finally:
+        sock.close()
+        thread.join(timeout=1.0)
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout.splitlines()[0])
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "timeout", payload

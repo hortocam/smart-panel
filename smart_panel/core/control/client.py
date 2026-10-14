@@ -21,6 +21,15 @@ lives inside :meth:`ControlClient.connect`) is :class:`RunnerNotAnswering` —
 exit 1 ``timeout``, a runner that is there but starved, mid-teardown, or gone
 the moment it accepted, still holding its single-instance lock. That split
 covers every path out of the client, the streamed ``logs --follow`` included.
+
+A connection that *breaks* rather than closes is in the accepted bucket too: an
+``EPIPE`` or ``ECONNRESET`` from a send or a read on a socket the runner
+accepted — a teardown racing the exchange, in ``connect``'s hello, ``call``'s
+request or the ``stream`` loop — is :class:`RunnerNotAnswering`, never
+:class:`RunnerUnavailable` and never a raw ``OSError``. Only the
+``sock.connect`` refusal itself means "there is no runner", so only that
+refusal spools. A clean EOF is still the pinned normal end of ``logs --follow``
+(exit 0); a reset is not an EOF.
 """
 
 from __future__ import annotations
@@ -161,9 +170,12 @@ class ControlClient:
 
         Raises:
             ImpersonationRefused: The path is owned by an unrelated account.
-            OSError: The socket is missing or refusing connections.
+            OSError: The ``connect`` itself was refused (``ENOENT`` when there
+                is no socket at all, ``ECONNREFUSED`` when nothing is
+                listening) — the only "there is no runner" shape.
             RunnerNotAnswering: The socket accepted but the hello went
-                unanswered, or the runner closed the connection first.
+                unanswered, the runner closed the connection first, or the
+                hello's send/read raised ``EPIPE``/``ECONNRESET``.
             ControlClientError: The runner answered the handshake with an error.
         """
         self._guard_owner()
@@ -176,8 +188,19 @@ class ControlClient:
             raise
         self._sock = sock
         self._reader = sock.makefile("rb")
-        self._send(protocol.hello_request(self.client_name).to_obj())
-        reply = self._receive()
+        try:
+            self._send(protocol.hello_request(self.client_name).to_obj())
+            reply = self._receive()
+        except OSError as exc:
+            # The hello rides on a connection the runner accepted, so a send or
+            # read failure here is never "no runner": silence keeps the caller's
+            # own arm (``_not_answering``), and every other ``OSError`` —
+            # ``EPIPE``/``ECONNRESET`` from a teardown racing the exchange — is
+            # the close-after-accept bucket.
+            self.close()
+            if _is_silence(exc):
+                raise
+            raise self._closed_after_accept() from exc
         if reply is None:
             self.close()
             raise self._closed_after_accept()
@@ -227,7 +250,8 @@ class ControlClient:
         Raises:
             RunnerUnavailable: No runner answers and the command is not spoolable.
             RunnerNotAnswering: The socket accepted the connection but the
-                runner did not answer in time (``timeout``, exit 1).
+                runner did not answer in time, closed it, or the request's
+                send/read raised ``EPIPE``/``ECONNRESET`` (``timeout``, exit 1).
             SpoolRefused: No runner answers, the runtime directory is gone, and
                 this account may not create it.
             SpoolFull: The spool already holds the maximum number of entries.
@@ -242,13 +266,17 @@ class ControlClient:
                     raise self._not_answering(exc) from exc
                 raise RunnerUnavailable(f"the runner is not running: {exc}") from exc
         request = protocol.Request(cmd=cmd, args=dict(args or {}), id=next(self._ids))
-        self._send(request.to_obj())
         try:
+            self._send(request.to_obj())
             reply = self._receive()
         except OSError as exc:
+            # Same split as the handshake, now mid-session: the connection was
+            # established, so a request send or read that raises ``EPIPE``/
+            # ``ECONNRESET`` is the close-after-accept bucket (``timeout``, exit
+            # 1), not a raw ``OSError`` and never "there is no runner".
             if _is_silence(exc):
                 raise self._not_answering(exc) from exc
-            raise
+            raise self._closed_after_accept() from exc
         if reply is None:
             raise self._closed_after_accept()
         return protocol.Response.from_obj(reply)
@@ -266,12 +294,14 @@ class ControlClient:
         )
 
     def _closed_after_accept(self) -> RunnerNotAnswering:
-        """The error for a runner that accepted the connection, then closed it.
+        """The error for a runner that accepted the connection, then lost it.
 
         The same bucket as silence: the connect succeeded, so a runner *is*
         there — it is gone the moment it accepted (mid-teardown, or a handler
-        that failed) — and the answer is not the ``ENOENT``/``ECONNREFUSED``
-        "there is no runner" of exit 3, but the documented ``timeout`` (exit 1).
+        that failed), or it died with the socket up so a later send or read met
+        ``EPIPE``/``ECONNRESET`` — and none of that is the ``ENOENT``/
+        ``ECONNREFUSED`` "there is no runner" of exit 3, but the documented
+        ``timeout`` (exit 1).
         """
         return RunnerNotAnswering(
             "the runner accepted the control connection and then closed it without answering"
@@ -291,13 +321,22 @@ class ControlClient:
         the follow. A *refused* connect (``ENOENT``/``ECONNREFUSED``) is mapped
         to :class:`RunnerUnavailable` so a follow with no runner reports
         ``runner_not_running`` (exit 3), while a connect that was *accepted* and
-        then gave no answer — a silent hello, or a close — is
-        :class:`RunnerNotAnswering` (``timeout``, exit 1), exactly as
+        then gave no answer — a silent hello, a close, or a hello that reset —
+        is :class:`RunnerNotAnswering` (``timeout``, exit 1), exactly as
         :meth:`call` splits them.
+
+        The pinned streaming table gives exit 0 to "the runner closes the stream
+        (EOF)", and that is a clean end of the read below (``reply is None``).
+        A *reset* is not an EOF: the runner's socket was torn down under the
+        follow (``EPIPE``/``ECONNRESET`` on the request or on an event read), so
+        it is the close-after-accept class — ``timeout`` (exit 1), the same
+        code the same errno gets on the one-shot path. Deciding it the other
+        way would report a broken stream as a normal end of ``--follow``.
 
         Raises:
             RunnerUnavailable: No runner is listening on the socket.
-            RunnerNotAnswering: The socket accepted but the answer never came.
+            RunnerNotAnswering: The socket accepted but the answer never came,
+                or the connection broke mid-stream (``EPIPE``/``ECONNRESET``).
             ImpersonationRefused: The path is owned by an unrelated account.
             ControlClientError: The runner answered the handshake with an error.
         """
@@ -311,9 +350,28 @@ class ControlClient:
         assert self._sock is not None
         self._sock.settimeout(None)
         request = protocol.Request(cmd=cmd, args=dict(args or {}), id=next(self._ids))
-        self._send(request.to_obj())
+        try:
+            self._send(request.to_obj())
+        except OSError as exc:
+            # The follow's request rides the same established connection as a
+            # one-shot's, so a send that raises EPIPE/ECONNRESET is the
+            # close-after-accept class too, never a raw OSError out of stream().
+            if _is_silence(exc):
+                raise self._not_answering(exc) from exc
+            raise self._closed_after_accept() from exc
         while True:
-            reply = self._receive()
+            try:
+                reply = self._receive()
+            except OSError as exc:
+                # The socket is blocking here, so this is the runner's socket
+                # being torn down under the follow (a reset), not the pinned
+                # clean EOF: a follow is ended normally by the runner *closing*
+                # the stream (exit 0), while a reset broke it. That is the same
+                # class as the one-shot request's reset (``timeout``, exit 1) —
+                # an errno does not change meaning because the socket streams.
+                if _is_silence(exc):
+                    raise self._not_answering(exc) from exc
+                raise self._closed_after_accept() from exc
             if reply is None:
                 return
             yield reply
